@@ -133,5 +133,3 @@ function build_F(n, J, t, k, sites, cutoff, maxdim)
 
     return F_components
 end
-
-
