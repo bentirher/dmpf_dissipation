@@ -92,12 +92,24 @@ function left_multiply(A::MPO, F::MPO; cutoff, maxdim)
     return apply(A, F; cutoff=cutoff, maxdim=maxdim)
 end
 
-# Right multiplication: F * A
-# Implemented as (A† * F†)† to avoid index-convention issues
-function right_multiply(F::MPO, A::MPO; cutoff, maxdim)
-    X = apply(dag(A), dag(F); cutoff=cutoff, maxdim=maxdim)
-    return dag(X)
+# # Right multiplication: F * A
+# # Implemented as (A† * F†)† to avoid index-convention issues
+# function right_multiply(F::MPO, A::MPO; cutoff, maxdim)
+#     X = apply(dag(A), dag(F); cutoff=cutoff, maxdim=maxdim)
+#     return dag(X)
+# end
+
+# Operator adjoint of an MPO: conjugate + swap bra/ket site indices
+function op_dag(A::MPO)
+    return swapprime(dag(A), 0 => 1)
 end
+
+# Right multiplication: F * A
+function right_multiply(F::MPO, A::MPO; cutoff, maxdim)
+    X = apply(op_dag(A), op_dag(F); cutoff=cutoff, maxdim=maxdim)
+    return op_dag(X)
+end
+
 
 function build_F(n, J, t, k, sites, cutoff, maxdim)
     Id = identity_mpo(sites)
