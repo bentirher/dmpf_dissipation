@@ -1,5 +1,6 @@
 using ITensors, ITensorMPS
 using LinearAlgebra
+include("product_formula_generation.jl")
 
 ITensors.op(::OpName"RXX", ::SiteType"Qubit"; θ) = begin
     c = cos(θ/2)
@@ -41,52 +42,6 @@ function identity_mpo(sites)
     return Id
 end
 
-function get_step_gates(n, J, dt, sites)
-    alpha = [x * dt for x in J]
-    beta  = [2 * x * dt for x in J]
-    gates = ITensor[]
-
-    for j in 1:2:n-1
-        s1, s2 = sites[j], sites[j+1]
-        push!(gates, op("RXX", s1, s2; θ = alpha[j]))
-        push!(gates, op("RYY", s1, s2; θ = alpha[j]))
-        push!(gates, op("RZZ", s1, s2; θ = beta[j]))
-    end
-
-    if n > 2
-        for j in 2:2:n-1
-            s1, s2 = sites[j], sites[j+1]
-            push!(gates, op("RXX", s1, s2; θ = alpha[j]))
-            push!(gates, op("RYY", s1, s2; θ = alpha[j]))
-            push!(gates, op("RZZ", s1, s2; θ = beta[j]))
-        end
-    end
-    return gates
-end
-
-# One backward (dagger) Trotter step:
-# (g_m ... g_2 g_1)† = g_1† g_2† ... g_m†
-function get_step_gates_dag(n, J, dt, sites)
-    gates = get_step_gates(n, J, -dt, sites)
-    return reverse(gates)
-end
-
-# Build ONE forward step as an MPO
-function get_step_MPO(n, J, dt, sites, cutoff, maxdim)
-    step_gates = get_step_gates(n, J, dt, sites)
-    S = identity_mpo(sites)
-    S = apply(step_gates, S; cutoff=cutoff, maxdim=maxdim)
-    return S
-end
-
-# Build ONE backward step as an MPO
-function get_step_MPO_dag(n, J, dt, sites, cutoff, maxdim)
-    step_gates_dag = get_step_gates_dag(n, J, dt, sites)
-    S = identity_mpo(sites)
-    S = apply(step_gates_dag, S; cutoff=cutoff, maxdim=maxdim)
-    return S
-end
-
 # Left multiplication: A * F
 function left_multiply(A::MPO, F::MPO; cutoff, maxdim)
     return apply(A, F; cutoff=cutoff, maxdim=maxdim)
@@ -111,17 +66,17 @@ function right_multiply(F::MPO, A::MPO; cutoff, maxdim)
 end
 
 
-function build_F(n, J, t, k, sites, cutoff, maxdim)
+function build_F(n, J, t, k, sites, cutoff, maxdim; order::Int = 2)
     Id = identity_mpo(sites)
     F_components = MPO[]
 
     for i in eachindex(k)
         dt_i = t / k[i]
-        step_i_dag_mpo = get_step_MPO_dag(n, J, dt_i, sites, cutoff, maxdim)
+        step_i_dag_mpo = get_step_MPO_dag(n, J, dt_i, sites, cutoff, maxdim; order=order)
 
         for j in eachindex(k)
             dt_j = t / k[j]
-            step_j_mpo = get_step_MPO(n, J, dt_j, sites, cutoff, maxdim)
+            step_j_mpo = get_step_MPO(n, J, dt_j, sites, cutoff, maxdim; order=order)
 
             F = deepcopy(Id)
             time_i = 0.0
