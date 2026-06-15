@@ -59,3 +59,36 @@ function build_F(n, J, t, k, sites, cutoff, maxdim; order::Int = 2)
 
     return F_components
 end
+
+function build_F_between_lists(n, J, t, ks_left, ks_right, sites, cutoff, maxdim; order_left::Int=2, order_right::Int=2)
+    Id = identity_mpo(sites)
+    F_components = MPO[]
+
+    for i in eachindex(ks_left)
+        dt_i = t / ks_left[i]
+        step_i_dag_mpo = get_step_MPO_dag(n, J, dt_i, sites, cutoff, maxdim; order=order_left)
+
+        for j in eachindex(ks_right)
+            dt_j = t / ks_right[j]
+            step_j_mpo = get_step_MPO(n, J, dt_j, sites, cutoff, maxdim; order=order_right)
+
+            F = deepcopy(Id)
+            time_i = 0.0
+            time_j = 0.0
+
+            while (time_i < t - 1e-12) || (time_j < t - 1e-12)
+                if (time_j <= time_i) && (time_j < t - 1e-12)
+                    F = right_multiply(F, step_j_mpo; cutoff=cutoff, maxdim=maxdim)
+                    time_j += dt_j
+                elseif time_i < t - 1e-12
+                    F = left_multiply(step_i_dag_mpo, F; cutoff=cutoff, maxdim=maxdim)
+                    time_i += dt_i
+                end
+            end
+
+            push!(F_components, F)
+        end
+    end
+
+    return F_components
+end
