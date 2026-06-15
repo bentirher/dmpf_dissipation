@@ -2,46 +2,6 @@ using ITensors, ITensorMPS
 using LinearAlgebra
 include("product_formula_generation.jl")
 
-ITensors.op(::OpName"RXX", ::SiteType"Qubit"; θ) = begin
-    c = cos(θ/2)
-    s = -im*sin(θ/2)
-    ComplexF64[
-        c 0 0 s
-        0 c s 0
-        0 s c 0
-        s 0 0 c
-    ]
-end
-
-ITensors.op(::OpName"RYY", ::SiteType"Qubit"; θ) = begin
-    c = cos(θ/2)
-    s = -im*sin(θ/2)
-    ComplexF64[
-        c 0 0 -s
-        0 c s 0
-        0 s c 0
-        -s 0 0 c
-    ]
-end
-
-ITensors.op(::OpName"RZZ", ::SiteType"Qubit"; θ) = begin
-    ComplexF64[
-        exp(-im*θ/2) 0 0 0
-        0 exp(im*θ/2) 0 0
-        0 0 exp(im*θ/2) 0
-        0 0 0 exp(-im*θ/2)
-    ]
-end
-
-function identity_mpo(sites)
-    n = length(sites)
-    Id = MPO(sites)
-    for j in 1:n
-        Id[j] = op(sites, "Id", j)
-    end
-    return Id
-end
-
 # Left multiplication: A * F
 function left_multiply(A::MPO, F::MPO; cutoff, maxdim)
     return apply(A, F; cutoff=cutoff, maxdim=maxdim)
@@ -64,7 +24,6 @@ function right_multiply(F::MPO, A::MPO; cutoff, maxdim)
     X = apply(op_dag(A), op_dag(F); cutoff=cutoff, maxdim=maxdim)
     return op_dag(X)
 end
-
 
 function build_F(n, J, t, k, sites, cutoff, maxdim; order::Int = 2)
     Id = identity_mpo(sites)
