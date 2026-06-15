@@ -1,47 +1,13 @@
 include("direct_MPO_computation.jl")
+include("middle_out_contraction.jl")
 
-const σx = ComplexF64[0 1; 1 0]
-const σy = ComplexF64[0 -im; im 0]
-const σz = ComplexF64[1 0; 0 -1]
-const I2 = Matrix{ComplexF64}(I, 2, 2)
+# Middle-out contraction calculation of M and L for the optimization problem
 
-function embed_one_site(op1::AbstractMatrix, n::Int, j::Int)
-    ops = [I2 for _ in 1:n]
-    ops[j] = op1
-    out = ops[1]
-    for k in 2:n
-        out = kron(out, ops[k])
-    end
-    return out
-end
-
-function embed_two_site(op1::AbstractMatrix, op2::AbstractMatrix, n::Int, j::Int)
-    @assert 1 <= j < n
-    ops = [I2 for _ in 1:n]
-    ops[j] = op1
-    ops[j+1] = op2
-    out = ops[1]
-    for k in 2:n
-        out = kron(out, ops[k])
-    end
-    return out
-end
-
-function heisenberg_dense_hamiltonian(n, J)
-    H = zeros(ComplexF64, 2^n, 2^n)
-    for j in 1:n-1
-        H .-= J[j] * embed_two_site(σx, σx, n, j)
-        H .-= J[j] * embed_two_site(σy, σy, n, j)
-        H .-= 2J[j] * embed_two_site(σz, σz, n, j)
-    end
-    return H
-end
-
-function gram_matrix_direct_mpo(n, J, t, ks, sites, psi; cutoff=0.0, maxdim=10_000)
+function gram_matrix_middle_out(n, J, t, ks, sites, psi; cutoff=0.0, maxdim=50, order::Int=2)
     r = length(ks)
     M = zeros(Float64, r, r)
 
-    Fs = build_F_direct_list(n, J, t, ks, sites, cutoff, maxdim)
+    Fs = build_F(n, J, t, ks, sites, cutoff, maxdim; order=order)
 
     idx = 1
     for i in 1:r
@@ -55,37 +21,51 @@ function gram_matrix_direct_mpo(n, J, t, ks, sites, psi; cutoff=0.0, maxdim=10_0
     return M
 end
 
-function gram_matrix_dense(n, J, t, ks, bitstring)
-    psi = basis_state(bitstring)
+function L_vector_middle_out(n, J, t, ks, k_ref, sites, psi; cutoff=0.0, maxdim=50, order::Int=2, order_ref::Int=2)
+    Fs = build_F_between_lists(
+        n, J, t, ks, [k_ref], sites, cutoff, maxdim;
+        order_left=order, order_right=order_ref
+    )
+
+    L = zeros(Float64, length(ks))
+    for j in eachindex(ks)
+        amp = inner(psi', Fs[j], psi)
+        L[j] = abs2(amp)
+    end
+
+    return L
+end
+
+# Direct MPO calculations of M and L to use for error estimation, NOT for the optimization problem
+
+function gram_matrix_direct_mpo(n, J, t, ks, sites, psi; cutoff=0.0, maxdim=200, order =2)
     r = length(ks)
     M = zeros(Float64, r, r)
 
+    Fs = build_F_direct_list(n, J, t, ks, sites, cutoff, maxdim; order)
+
+    idx = 1
     for i in 1:r
-        Ui = trotter_dense(n, J, t, ks[i])
         for j in 1:r
-            Uj = trotter_dense(n, J, t, ks[j])
-            amp = psi' * (Ui' * Uj) * psi
+            amp = inner(psi', Fs[idx], psi)
             M[i, j] = abs2(amp)
+            idx += 1
         end
     end
 
     return M
 end
 
-function L_vector_dense(n, J, t, ks, bitstring)
-    psi = basis_state(bitstring)
-    H = heisenberg_dense_hamiltonian(n, J)
-    U_exact = exp(-im * t * H)
+function L_vector_direct_mpo(n, J, t, ks, k_ref, sites, psi; cutoff=0.0, maxdim=200, order::Int=2, order_ref::Int=4)
+    Uref = build_full_U_mpo(n, J, t, k_ref, sites, cutoff, maxdim; order=order_ref)
 
-    r = length(ks)
-    L = zeros(Float64, r)
-
-    for j in 1:r
-        Uj = trotter_dense(n, J, t, ks[j])
-        amp = psi' * (Uj' * U_exact) * psi
+    L = zeros(Float64, length(ks))
+    for j in eachindex(ks)
+        Uj_dag = build_full_Udag_mpo(n, J, t, ks[j], sites, cutoff, maxdim; order=order)
+        F = left_multiply(Uj_dag, Uref; cutoff=cutoff, maxdim=maxdim)
+        amp = inner(psi', F, psi)
         L[j] = abs2(amp)
     end
-
     return L
 end
 
