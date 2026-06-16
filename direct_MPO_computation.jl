@@ -22,7 +22,7 @@ function build_full_Udag_mpo(n, J, t, k, sites, cutoff, maxdim; order::Int=2)
     return Udag
 end
 
-function build_F_direct_mpo(n, J, t, ki, kj, sites, cutoff, maxdim, order)
+function build_F_direct_mpo(n, J, t, ki, kj, sites, cutoff, maxdim; order::Int=2)
     Ui_dag = build_full_Udag_mpo(n, J, t, ki, sites, cutoff, maxdim; order)
     Uj     = build_full_U_mpo(n, J, t, kj, sites, cutoff, maxdim; order)
     Fij = left_multiply(Ui_dag, Uj; cutoff=cutoff, maxdim=maxdim)
@@ -33,7 +33,7 @@ function build_F_direct_list(n, J, t, ks, sites, cutoff, maxdim; order::Int=2)
     Fs = MPO[]
     for ki in ks
         for kj in ks
-            push!(Fs, build_F_direct_mpo(n, J, t, ki, kj, sites, cutoff, maxdim, order))
+            push!(Fs, build_F_direct_mpo(n, J, t, ki, kj, sites, cutoff, maxdim; order=order))
         end
     end
     return Fs
