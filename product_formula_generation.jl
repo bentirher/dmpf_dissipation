@@ -32,6 +32,15 @@ ITensors.op(::OpName"RZZ", ::SiteType"Qubit"; θ) = begin
     ]
 end
 
+function identity_mpo(sites)
+    n = length(sites)
+    Id = MPO(sites)
+    for j in 1:n
+        Id[j] = op(sites, "Id", j)
+    end
+    return Id
+end
+
 # General interface that admits order 1, 2 and 4
 
 function get_step_gates(n, J, dt, sites; order::Int=1)
