@@ -55,8 +55,8 @@ function test_dynamic_mpf_closed(
 
     c, λ = dynamic_mpf_coefficients(M_opt, L_opt)
 
-    M_ref = gram_matrix_direct_mpo(n, J, t, ks, sites, psi; cutoff=cutoff_eval, maxdim=maxdim_eval)
-    L_ref = L_vector_direct_reference(n, J, t, ks, k_ref_eval, sites, psi; cutoff=cutoff_eval, maxdim=maxdim_eval, order=order, order_ref=order_ref_eval)
+    M_ref = gram_matrix_direct_mpo(n, J, t, ks, sites, psi; cutoff=cutoff_eval, maxdim=maxdim_eval, order=order)
+    L_ref = L_vector_direct_mpo(n, J, t, ks, k_ref_eval, sites, psi; cutoff=cutoff_eval, maxdim=maxdim_eval, order=order, order_ref=order_ref_eval)
 
     E_mpf = dynamic_mpf_error(M_ref, L_ref, c)
     E_trot = single_trotter_frobenius_errors(L_ref)
@@ -75,56 +75,47 @@ end
 
 using Plots
 
-function frobenius_data_vs_time(n, J, times, ks, sites, initial_state; cutoff=0.0, maxdim=10_000)
-    bitstring = join(initial_state)
-    psi_mpo = MPS(sites, initial_state)
-    normalize!(psi_mpo)
+# function frobenius_data_vs_time(n, J, times, ks, k_ref_opt, k_ref_eval, sites, initial_state; cutoff=0.0)
+#     bitstring = join(initial_state)
+#     psi_mpo = MPS(sites, initial_state)
+#     normalize!(psi_mpo)
 
-    r = length(ks)
-    single_errors = [Float64[] for _ in 1:r]
-    mpf_errors = Float64[]
+#     r = length(ks)
+#     single_errors = [Float64[] for _ in 1:r]
+#     mpf_errors = Float64[]
 
-    for t in times
-        M_opt = gram_matrix_middle_out(n, J, t, ks, sites, psi; cutoff=cutoff_opt, maxdim=maxdim_opt, order=order)
-        L_opt = L_vector_middle_out(n, J, t, ks, k_ref_opt, sites, psi; cutoff=cutoff_opt, maxdim=maxdim_opt, order=order, order_ref=order_ref_opt)
+#     for t in times
+#         data = test_dynamic_mpf_closed(n, J, t, ks, k_ref_opt, k_ref_eval, sites, initial_state)
 
-        c, λ = dynamic_mpf_coefficients(M_opt, L_opt)
+#         for j in 1:r
+#             push!(single_errors[j], data.E_trot[j])
+#         end
+#         push!(mpf_errors, data.E_mpf)
+#     end
 
-        M_ref = gram_matrix_direct_mpo(n, J, t, ks, sites, psi; cutoff=cutoff_eval, maxdim=maxdim_eval)
-        L_ref = L_vector_direct_reference(n, J, t, ks, k_ref_eval, sites, psi; cutoff=cutoff_eval, maxdim=maxdim_eval, order=order, order_ref=order_ref_eval)
+#     return (
+#         times = collect(times),
+#         single_errors = single_errors,
+#         mpf_errors = mpf_errors,
+#     )
+# end
 
-        E_mpf = dynamic_mpf_error(M_ref, L_ref, c)
-        E_trot = single_trotter_frobenius_errors(L_ref)
+# function plot_frobenius_errors(data, ks)
+#     plt = plot(
+#         xlabel = "time",
+#         ylabel = "Frobenius error",
+#         # title = "Frobenius errors vs time",
+#         legend = :topright,
+#         lw = 2,
+#         size = (1600, 1000),
+#         dpi = 300,
+#     )
 
-        for j in 1:r
-            push!(single_errors[j], E_trot[j])
-        end
-        push!(mpf_errors, E_mpf)
-    end
+#     for (j, k) in enumerate(ks)
+#         plot!(plt, data.times, data.single_errors[j], label = "Trotter k=$k")
+#     end
 
-    return (
-        times = collect(times),
-        single_errors = single_errors,
-        mpf_errors = mpf_errors,
-    )
-end
+#     plot!(plt, data.times, data.mpf_errors, label = "dynamic MPF", lw = 3, ls = :dash)
 
-function plot_frobenius_errors(data, ks)
-    plt = plot(
-        xlabel = "time",
-        ylabel = "Frobenius error",
-        # title = "Frobenius errors vs time",
-        legend = :topright,
-        lw = 2,
-        size = (1600, 1000),
-        dpi = 300,
-    )
-
-    for (j, k) in enumerate(ks)
-        plot!(plt, data.times, data.single_errors[j], label = "Trotter k=$k")
-    end
-
-    plot!(plt, data.times, data.mpf_errors, label = "dynamic MPF", lw = 3, ls = :dash)
-
-    return plt
-end
+#     return plt
+# end
