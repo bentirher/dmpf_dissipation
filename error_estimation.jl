@@ -33,6 +33,27 @@ function L_vector_direct_mpo(n, J, t, ks, k_ref, sites, psi; cutoff=0.0, maxdim=
     return L
 end
 
+# Compute the MPS baseline with TEBD
+
+function evolve_mps_tebd(n, J, t, k, sites, initial_state;
+    cutoff=0.0, maxdim=100, order::Int=2)
+
+    psi = MPS(sites, initial_state)
+    normalize!(psi)
+
+    dt = t / k
+    gates = get_step_gates(n, J, dt, sites; order=order)
+
+    for _ in 1:k
+        psi = apply(gates, psi; cutoff=cutoff, maxdim=maxdim)
+        normalize!(psi)
+    end
+
+    return psi
+end
+
+# Different error estimations
+
 function dynamic_mpf_error(M::AbstractMatrix, L::AbstractVector, c::AbstractVector)
     return 1.0 + dot(c, M * c) - 2.0 * dot(L, c)
 end
@@ -41,11 +62,33 @@ function single_trotter_frobenius_errors(L::AbstractVector)
     return 2.0 .- 2.0 .* L
 end
 
+function mps_baseline_frobenius_error(n, J, t, sites, initial_state;
+    k_mps=100, maxdim_mps=100, cutoff_mps=0.0, order_mps::Int=4,
+    k_ref=100, maxdim_ref=400, cutoff_ref=0.0, order_ref::Int=4)
+
+    psi_mps = evolve_mps_tebd(
+        n, J, t, k_mps, sites, initial_state;
+        cutoff=cutoff_mps, maxdim=maxdim_mps, order=order_mps
+    )
+
+    psi_ref = evolve_mps_tebd(
+        n, J, t, k_ref, sites, initial_state;
+        cutoff=cutoff_ref, maxdim=maxdim_ref, order=order_ref
+    )
+
+    ov = inner(psi_mps, psi_ref)
+    return 2.0 - 2.0 * abs2(ov)
+end
+
+# MAIN WRAPPER: Computes all errors
+
 function test_dynamic_mpf_closed(
     n, J, t, ks, k_ref_opt, k_ref_eval, sites, initial_state;
     cutoff_opt=0.0, maxdim_opt=50,
     cutoff_eval=0.0, maxdim_eval=200,
-    order=2, order_ref_opt=2, order_ref_eval=4
+    order=2, order_ref_opt=2, order_ref_eval=4,
+    k_mps=100, maxdim_mps=100, cutoff_mps=0.0, order_mps=4,
+    k_ref_mps=100, maxdim_ref_mps=400, cutoff_ref_mps=0.0, order_ref_mps=4
 )
     psi = MPS(sites, initial_state)
     normalize!(psi)
@@ -60,6 +103,7 @@ function test_dynamic_mpf_closed(
 
     E_mpf = dynamic_mpf_error(M_ref, L_ref, c)
     E_trot = single_trotter_frobenius_errors(L_ref)
+    E_mps = mps_baseline_frobenius_error(n, J, t, sites, initial_state; k_mps=k_mps, maxdim_mps=maxdim_mps, cutoff_mps=cutoff_mps, order_mps=order_mps, k_ref=k_ref_mps, maxdim_ref=maxdim_ref_mps, cutoff_ref=cutoff_ref_mps, order_ref=order_ref_mps)
 
     return (
         M_opt = M_opt,
@@ -70,6 +114,7 @@ function test_dynamic_mpf_closed(
         L_ref = L_ref,
         E_mpf = E_mpf,
         E_trot = E_trot,
+        E_mps = E_mps,
     )
 end
 
