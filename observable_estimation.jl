@@ -24,20 +24,20 @@ end
 # Local observable estimators
 # -------------------------
 
-function expect_Z_mps(psi, sites, i)
-    psiZ = apply(op(sites, "Z", i), psi)
-    return real(inner(psi', psiZ))
+function expect_Z_mps(psi, i)
+    vals = expect(psi, "Z"; sites=[i])
+    return real(vals[1])
 end
 
 function expect_ZZ_mps(psi, sites, i, j)
-    ops = ITensor[op(sites, "Z", i), op(sites, "Z", j)]
-    psiZZ = apply(ops, psi)
+    psiZZ = apply(op(sites, "Z", i), psi)
+    psiZZ = apply(op(sites, "Z", j), psiZZ)
     return real(inner(psi', psiZZ))
 end
 
 function observable_value_mps(psi, sites; obs_type=:Z, i, j=nothing)
     if obs_type == :Z
-        return expect_Z_mps(psi, sites, i)
+        return expect_Z_mps(psi, i)
     elseif obs_type == :ZZ
         @assert j !== nothing "For obs_type = :ZZ, provide both i and j."
         return expect_ZZ_mps(psi, sites, i, j)
