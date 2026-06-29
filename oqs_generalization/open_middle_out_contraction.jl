@@ -56,17 +56,17 @@ end
 # with the number of layers (this is exactly what build_bond_dimension_trace
 # below is meant to let you measure directly, rather than assume).
 
-function build_open_F(n, J, gammas, t, k, lsites::LiouvilleSites, cutoff, maxdim; order::Int=1)
+function build_open_F(n, J, gammas, t, k, lsites::LiouvilleSites, cutoff, maxdim; order::Int=1, dissipation::Bool=true)
     Id = identity_liouville_mpo(lsites)
     F_components = MPO[]
 
     for i in eachindex(k)
         dt_i = t / k[i]
-        step_i_dag_mpo = get_open_step_MPO_dag(n, J, gammas, dt_i, lsites, cutoff, maxdim; order=order)
+        step_i_dag_mpo = get_open_step_MPO_dag(n, J, gammas, dt_i, lsites, cutoff, maxdim; order=order, dissipation=dissipation)
 
         for j in eachindex(k)
             dt_j = t / k[j]
-            step_j_mpo = get_open_step_MPO(n, J, gammas, dt_j, lsites, cutoff, maxdim; order=order)
+            step_j_mpo = get_open_step_MPO(n, J, gammas, dt_j, lsites, cutoff, maxdim; order=order, dissipation=dissipation)
 
             F = deepcopy(Id)
             time_i = 0.0
@@ -92,17 +92,17 @@ function build_open_F(n, J, gammas, t, k, lsites::LiouvilleSites, cutoff, maxdim
 end
 
 function build_open_F_between_lists(n, J, gammas, t, ks_left, ks_right, lsites::LiouvilleSites, cutoff, maxdim;
-                                     order_left::Int=1, order_right::Int=1)
+                                     order_left::Int=1, order_right::Int=1, dissipation::Bool=true)
     Id = identity_liouville_mpo(lsites)
     F_components = MPO[]
 
     for i in eachindex(ks_left)
         dt_i = t / ks_left[i]
-        step_i_dag_mpo = get_open_step_MPO_dag(n, J, gammas, dt_i, lsites, cutoff, maxdim; order=order_left)
+        step_i_dag_mpo = get_open_step_MPO_dag(n, J, gammas, dt_i, lsites, cutoff, maxdim; order=order_left, dissipation=dissipation)
 
         for j in eachindex(ks_right)
             dt_j = t / ks_right[j]
-            step_j_mpo = get_open_step_MPO(n, J, gammas, dt_j, lsites, cutoff, maxdim; order=order_right)
+            step_j_mpo = get_open_step_MPO(n, J, gammas, dt_j, lsites, cutoff, maxdim; order=order_right, dissipation=dissipation)
 
             F = deepcopy(Id)
             time_i = 0.0
@@ -140,9 +140,9 @@ end
 # evolution" role of k0 explicit at the call site.
 
 function build_open_F_ex(n, J, gammas, t, ks, k0, lsites::LiouvilleSites, cutoff, maxdim;
-                          order::Int=1, order_ref::Int=1)
+                          order::Int=1, order_ref::Int=1, dissipation::Bool=true)
     return build_open_F_between_lists(
         n, J, gammas, t, [k0], ks, lsites, cutoff, maxdim;
-        order_left=order_ref, order_right=order
+        order_left=order_ref, order_right=order, dissipation=dissipation
     )
 end

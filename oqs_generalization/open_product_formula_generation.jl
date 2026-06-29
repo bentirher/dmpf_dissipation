@@ -193,11 +193,17 @@ end
 # odd unitary layer again. This is the direct open-system analogue of
 # get_step_gates_order2 in product_formula_generation.jl.
 
-function get_open_step_gates(n, J, gammas, dt, lsites::LiouvilleSites; order::Int=1)
+function get_open_step_gates(n, J, gammas, dt, lsites::LiouvilleSites; order::Int=1, dissipation::Bool=true)
+    # dissipation=false recovers the closed-system Heisenberg Trotter circuit
+    # exactly: dissipator_layer_channel_gates/_dag already skip any site with
+    # gamma==0 (see `gammas[j] == 0.0 && continue` above), so zeroing gammas
+    # here simply produces an empty dissipator layer at every step, with no
+    # other change to the unitary odd/even layers.
+    effective_gammas = dissipation ? gammas : zeros(length(gammas))
     if order == 1
-        return get_open_step_gates_order1(n, J, gammas, dt, lsites)
+        return get_open_step_gates_order1(n, J, effective_gammas, dt, lsites)
     elseif order == 2
-        return get_open_step_gates_order2(n, J, gammas, dt, lsites)
+        return get_open_step_gates_order2(n, J, effective_gammas, dt, lsites)
     else
         error("Unsupported open product-formula order = $order. Use 1 or 2.")
     end
@@ -237,11 +243,12 @@ end
 # the genuinely different non-CP adjoint built in
 # amplitude_damping_dag_gate, NOT by reversing gamma*dt).
 
-function get_open_step_gates_dag(n, J, gammas, dt, lsites::LiouvilleSites; order::Int=1)
+function get_open_step_gates_dag(n, J, gammas, dt, lsites::LiouvilleSites; order::Int=1, dissipation::Bool=true)
+    effective_gammas = dissipation ? gammas : zeros(length(gammas))
     if order == 1
-        return get_open_step_gates_order1_dag(n, J, gammas, dt, lsites)
+        return get_open_step_gates_order1_dag(n, J, effective_gammas, dt, lsites)
     elseif order == 2
-        return get_open_step_gates_order2_dag(n, J, gammas, dt, lsites)
+        return get_open_step_gates_order2_dag(n, J, effective_gammas, dt, lsites)
     else
         error("Unsupported open product-formula order = $order. Use 1 or 2.")
     end
@@ -293,15 +300,15 @@ end
 # product_formula_generation.jl. Each call to `apply` truncates the MPO via
 # SVD with the given cutoff/maxdim, exactly as in the closed-system code.
 
-function get_open_step_MPO(n, J, gammas, dt, lsites::LiouvilleSites, cutoff, maxdim; order::Int=1)
-    gates = get_open_step_gates(n, J, gammas, dt, lsites; order=order)
+function get_open_step_MPO(n, J, gammas, dt, lsites::LiouvilleSites, cutoff, maxdim; order::Int=1, dissipation::Bool=true)
+    gates = get_open_step_gates(n, J, gammas, dt, lsites; order=order, dissipation=dissipation)
     S = identity_liouville_mpo(lsites)
     S = apply(gates, S; cutoff=cutoff, maxdim=maxdim)
     return S
 end
 
-function get_open_step_MPO_dag(n, J, gammas, dt, lsites::LiouvilleSites, cutoff, maxdim; order::Int=1)
-    gates_dag = get_open_step_gates_dag(n, J, gammas, dt, lsites; order=order)
+function get_open_step_MPO_dag(n, J, gammas, dt, lsites::LiouvilleSites, cutoff, maxdim; order::Int=1, dissipation::Bool=true)
+    gates_dag = get_open_step_gates_dag(n, J, gammas, dt, lsites; order=order, dissipation=dissipation)
     S = identity_liouville_mpo(lsites)
     S = apply(gates_dag, S; cutoff=cutoff, maxdim=maxdim)
     return S

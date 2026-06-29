@@ -84,11 +84,11 @@ end
 
 function track_Fii_bond_dimension(
     n, J, gammas, t, k, lsites::LiouvilleSites, cutoff, maxdim;
-    order::Int=1, track_exact_rank::Bool=false, rank_cutoff::Float64=1e-10
+    order::Int=1, track_exact_rank::Bool=false, rank_cutoff::Float64=1e-10, dissipation::Bool=true
 )
     dt = t / k
-    step_mpo     = get_open_step_MPO(n, J, gammas, dt, lsites, cutoff, maxdim; order=order)
-    step_dag_mpo = get_open_step_MPO_dag(n, J, gammas, dt, lsites, cutoff, maxdim; order=order)
+    step_mpo     = get_open_step_MPO(n, J, gammas, dt, lsites, cutoff, maxdim; order=order, dissipation=dissipation)
+    step_dag_mpo = get_open_step_MPO_dag(n, J, gammas, dt, lsites, cutoff, maxdim; order=order, dissipation=dissipation)
 
     F = identity_liouville_mpo(lsites)
 
