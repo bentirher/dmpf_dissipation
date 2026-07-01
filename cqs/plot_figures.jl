@@ -23,6 +23,7 @@ function frobenius_data_vs_time(
             k_ref_mps=k_ref_mps, maxdim_ref_mps=maxdim_ref_mps,
             cutoff_ref_mps=cutoff_ref_mps, order_ref_mps=order_ref_mps
         )
+        @info "Time instant t = $(t) done"
 
         for j in 1:r
             push!(single_errors[j], data.E_trot[j])
