@@ -192,6 +192,28 @@ end
 # layer, full-step even unitary layer, full-step dissipator layer, half-step
 # odd unitary layer again. This is the direct open-system analogue of
 # get_step_gates_order2 in product_formula_generation.jl.
+#
+# Order-4 (Yoshida composition): the same triple-jump composition of the
+# order-2 step used in get_step_gates_order4 in product_formula_generation.jl,
+#   S4(dt) = S2(p1*dt) S2(p1*dt) S2(p2*dt) S2(p1*dt) S2(p1*dt),
+#   p1 = 1/(4 - 4^(1/3)),  p2 = 1 - 4*p1  (note p2 < 0),
+# now with S2 taken to be the open-system order-2 step defined above. This is
+# valid here for the same reason it's valid in the closed-system file: the
+# Yoshida coefficients are derived purely from the Baker-Campbell-Hausdorff
+# error terms of composing exp(dt*L) with a symmetric second-order splitting,
+# and that derivation only uses that S2(dt) approximates exp(dt*L) to
+# second order in dt for the FULL generator L = L_H + L_diss -- it does not
+# require L (or S2) to come from a unitary process. So it applies unchanged
+# to the full open-system Liouvillian, including the negative sub-step
+# p2*dt. Note that S2(p2*dt) with p2 < 0 is evaluated by calling
+# get_open_step_gates_order2 with a negative dt; every gate builder in this
+# file (heisenberg_bond_unitary via alpha,beta, and
+# single_qubit_dissipator_channel via exp(dt*generator)) is already
+# well-defined for negative dt, so no special-casing is needed for the
+# forward composition. (The negative-dt dissipator sub-step is NOT itself a
+# physical/CP channel -- exactly like S_diss(dt)^dagger elsewhere in this
+# file -- but it doesn't need to be: it's just one factor in a product that,
+# taken together, approximates the true physical channel S(dt) to 4th order.)
 
 function get_open_step_gates(n, J, gammas, dt, lsites::LiouvilleSites; order::Int=1, dissipation::Bool=true)
     # dissipation=false recovers the closed-system Heisenberg Trotter circuit
@@ -204,8 +226,10 @@ function get_open_step_gates(n, J, gammas, dt, lsites::LiouvilleSites; order::In
         return get_open_step_gates_order1(n, J, effective_gammas, dt, lsites)
     elseif order == 2
         return get_open_step_gates_order2(n, J, effective_gammas, dt, lsites)
+    elseif order == 4
+        return get_open_step_gates_order4(n, J, effective_gammas, dt, lsites)
     else
-        error("Unsupported open product-formula order = $order. Use 1 or 2.")
+        error("Unsupported open product-formula order = $order. Use 1, 2, or 4.")
     end
 end
 
@@ -226,6 +250,19 @@ function get_open_step_gates_order2(n, J, gammas, dt, lsites::LiouvilleSites)
     )
 end
 
+function get_open_step_gates_order4(n, J, gammas, dt, lsites::LiouvilleSites)
+    p1 = 1 / (4 - 4^(1/3))
+    p2 = 1 - 4p1
+
+    return vcat(
+        get_open_step_gates_order2(n, J, gammas, p1*dt, lsites),
+        get_open_step_gates_order2(n, J, gammas, p1*dt, lsites),
+        get_open_step_gates_order2(n, J, gammas, p2*dt, lsites),
+        get_open_step_gates_order2(n, J, gammas, p1*dt, lsites),
+        get_open_step_gates_order2(n, J, gammas, p1*dt, lsites),
+    )
+end
+
 # =============================================================================
 # Adjoint product formula
 # =============================================================================
@@ -242,6 +279,16 @@ end
 # which IS still valid since U is unitary; dissipator layers: replaced by
 # the genuinely different non-CP adjoint built in
 # amplitude_damping_dag_gate, NOT by reversing gamma*dt).
+#
+# This "reverse-and-adjoint-each-factor" rule composes: since
+# S4(dt) = B1 B2 B3 B4 B5 with each Bk = S2(pk*dt) a full order-2 block,
+#   S4(dt)^† = B5^† B4^† B3^† B2^† B1^†,
+# and each Bk^† is exactly what get_open_step_gates_order2_dag already
+# computes (called with the SAME signed sub-step pk*dt used to build Bk
+# forward, not its negation -- see get_open_step_gates_order2_dag below for
+# why negating dt is not the right adjoint here). So the order-4 adjoint is
+# built by taking the block-level order-2 adjoints and reversing their
+# order, exactly mirroring get_open_step_gates_order4 at the block level.
 
 function get_open_step_gates_dag(n, J, gammas, dt, lsites::LiouvilleSites; order::Int=1, dissipation::Bool=true)
     effective_gammas = dissipation ? gammas : zeros(length(gammas))
@@ -249,8 +296,10 @@ function get_open_step_gates_dag(n, J, gammas, dt, lsites::LiouvilleSites; order
         return get_open_step_gates_order1_dag(n, J, effective_gammas, dt, lsites)
     elseif order == 2
         return get_open_step_gates_order2_dag(n, J, effective_gammas, dt, lsites)
+    elseif order == 4
+        return get_open_step_gates_order4_dag(n, J, effective_gammas, dt, lsites)
     else
-        error("Unsupported open product-formula order = $order. Use 1 or 2.")
+        error("Unsupported open product-formula order = $order. Use 1, 2, or 4.")
     end
 end
 
@@ -278,6 +327,32 @@ function get_open_step_gates_order2_dag(n, J, gammas, dt, lsites::LiouvilleSites
 
     # (A B C A')^† = A'^† C^† B^† A^†
     return vcat(odd_half_2_dag, diss_full_dag, even_full_dag, odd_half_1_dag)
+end
+
+# Fourth-order adjoint, built by taking the Hilbert-Schmidt adjoint of each
+# order-2 block (via get_open_step_gates_order2_dag, called with the SAME
+# signed sub-step used in the forward order-4 formula -- NOT its negation)
+# and reversing the order of the blocks, exactly mirroring
+# get_open_step_gates_order4 at the block level:
+#   S4(dt) = B1 B2 B3 B4 B5   =>   S4(dt)^† = B5^† B4^† B3^† B2^† B1^†
+# with B1=B2=B4=B5 = S2(p1*dt) and B3 = S2(p2*dt). (The block sequence here
+# happens to be a palindrome in its coefficients, so the reversal doesn't
+# visibly reorder anything -- but it's written explicitly for clarity and to
+# stay correct if the coefficients were ever changed to a non-symmetric
+# higher-order composition.)
+
+function get_open_step_gates_order4_dag(n, J, gammas, dt, lsites::LiouvilleSites)
+    p1 = 1 / (4 - 4^(1/3))
+    p2 = 1 - 4p1
+
+    block_dags = [
+        get_open_step_gates_order2_dag(n, J, gammas, p1*dt, lsites),
+        get_open_step_gates_order2_dag(n, J, gammas, p1*dt, lsites),
+        get_open_step_gates_order2_dag(n, J, gammas, p2*dt, lsites),
+        get_open_step_gates_order2_dag(n, J, gammas, p1*dt, lsites),
+        get_open_step_gates_order2_dag(n, J, gammas, p1*dt, lsites),
+    ]
+    return vcat(reverse(block_dags)...)
 end
 
 # Helper: Hilbert-Schmidt adjoint of a single unitary-channel ITensor gate.
