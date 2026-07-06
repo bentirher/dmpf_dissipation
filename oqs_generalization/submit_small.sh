@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=bd_small
-#SBATCH --qos=test
+#SBATCH --qos=regular
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=20G
-#SBATCH --time=00:10:00
-#SBATCH --array=0-0
+#SBATCH --time=04:00:00
+#SBATCH --array=0-11
 #SBATCH --output=logs/small_%A_%a.out
 #SBATCH --error=logs/small_%A_%a.err
 
