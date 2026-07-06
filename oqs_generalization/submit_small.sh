@@ -22,7 +22,7 @@ n=${ns[$n_idx]}
 gamma=${gammas[$g_idx]}
 
 module spider julia   # run this once manually first to find the exact module name/version
-module load julia     # replace with the exact name module spider gives you
+module load Julia/1.11.6-linux-x86_64     # replace with the exact name module spider gives you
 
 export JULIA_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
