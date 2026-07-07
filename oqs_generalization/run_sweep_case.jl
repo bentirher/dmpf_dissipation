@@ -17,7 +17,8 @@ lsites = liouville_siteinds(n)
 # --- sweep-specific setup ---
 ks         = [3, 8]
 k_ref_opt  = 40
-k_ref_eval = 100
+# k_ref_eval = 100
+k_ref_eval = 50
 maxdim_ref = 256
 cutoff     = 1e-12
 
