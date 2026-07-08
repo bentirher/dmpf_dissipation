@@ -27,4 +27,4 @@ export JULIA_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 echo "Task $SLURM_ARRAY_TASK_ID: n=$n gamma=$gamma on $(hostname)"
-julia run_case.jl $n $gamma 4000
+julia run_case.jl $n $gamma 256
