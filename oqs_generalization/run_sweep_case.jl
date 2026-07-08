@@ -4,6 +4,12 @@ import Distributions
 import Random
 include("spectrum_truncation_analysis.jl")   # pulls in the full include chain
 
+using LinearAlgebra
+using Dates
+BLAS.set_num_threads(parse(Int, get(ENV, "SLURM_CPUS_PER_TASK", "1")))
+println("BLAS threads: ", BLAS.get_num_threads(), " / Julia CPU threads: ", Sys.CPU_THREADS)
+flush(stdout)
+
 md = parse(Int, ARGS[1])
 
 # --- setup, matching the earlier notebook cell exactly ---
@@ -25,13 +31,19 @@ cutoff     = 1e-12
 initially_excited = rand(["0", "1"], n)
 rho0 = vectorized_initial_state_mps(lsites, initially_excited)
 
-sweep = maxdim_truncation_sweep(
+println("[$(now())] starting sweep maxdim=$md ...")
+flush(stdout)
+
+sweep = @time maxdim_truncation_sweep(
     n, J, gammas, t, ks, k_ref_opt, k_ref_eval, lsites, rho0,
     [md];                       # <-- just this one maxdim
     maxdim_ref=maxdim_ref, cutoff=cutoff,
     order=1, order_ref_opt=1, order_ref_eval=2,
     dissipation=true
 )
+
+println("[$(now())] sweep maxdim=$md done.")
+flush(stdout)
 
 res = sweep.results[1]
 
