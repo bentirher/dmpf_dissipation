@@ -5,8 +5,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=24G
-#SBATCH --time=01:00:00
-#SBATCH --array=8-8
+#SBATCH --time=00:30:00
+#SBATCH --array=8-11
 #SBATCH --output=logs/small_%A_%a.out
 #SBATCH --error=logs/small_%A_%a.err
 
