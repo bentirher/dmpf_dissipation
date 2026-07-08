@@ -6,6 +6,7 @@ using LinearAlgebra
 using Dates
 
 # --- report whether BLAS is actually using the cores SLURM gave us ---
+BLAS.set_num_threads(parse(Int, get(ENV, "SLURM_CPUS_PER_TASK", "1")))
 println("BLAS threads: ", BLAS.get_num_threads(), " / Julia CPU threads: ", Sys.CPU_THREADS)
 flush(stdout)
 

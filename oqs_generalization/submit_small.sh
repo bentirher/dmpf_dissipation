@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=bd_small
-#SBATCH --qos=regular
+#SBATCH --qos=test
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=24G
 #SBATCH --time=00:10:00
 #SBATCH --array=8-8
@@ -24,6 +24,7 @@ gamma=${gammas[$g_idx]}
 module load Julia/1.11.6-linux-x86_64     # replace with the exact name module spider gives you
 
 export JULIA_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 echo "Task $SLURM_ARRAY_TASK_ID: n=$n gamma=$gamma on $(hostname)"
 julia run_case.jl $n $gamma 4000
