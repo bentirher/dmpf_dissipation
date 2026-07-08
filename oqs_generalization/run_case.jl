@@ -31,6 +31,10 @@ gammas = fill(gamma, n)
 # MPO construction and each Trotter layer, so a short test run reveals where the
 # wall-clock time actually goes. All primitives used here are already in scope
 # via the include chain above -- no project files are edited.
+#
+# NOTE: this runs at top-level script scope, so variables mutated inside the
+# `for` loop (F, bond_dims) must be declared `global` inside the loop, else
+# Julia's soft-scope rule treats them as new locals and the read of F fails.
 # =============================================================================
 
 dt = t / k
@@ -52,6 +56,7 @@ F = identity_liouville_mpo(lsites)
 bond_dims = Int[]
  
 for layer in 1:k
+    global F, bond_dims
     t_layer = @elapsed begin
         F = right_multiply(F, step_mpo; cutoff=cutoff, maxdim=maxdim)
         F = left_multiply(step_dag_mpo, F; cutoff=cutoff, maxdim=maxdim)
