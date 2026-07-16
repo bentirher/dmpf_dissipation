@@ -16,4 +16,4 @@ export JULIA_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 echo "mpf_sweep (de-duplicated, single job) on $(hostname)"
-julia run_sweep_case.jl
+julia run_sweep_case_v2.jl
