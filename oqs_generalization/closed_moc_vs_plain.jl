@@ -57,7 +57,8 @@ function middle_spectrum(M::MPO; svd_cutoff::Float64=1e-14)
     orthogonalize!(Mo, mid)
     right_link = commonind(Mo[mid], Mo[mid+1])
     U, S, V = svd(Mo[mid], right_link; cutoff=svd_cutoff)
-    svals = [S[i, i] for i in 1:dim(commonind(U, S))]
+    nsv = ITensors.dim(commonind(U, S))
+    svals = [S[i, i] for i in 1:nsv]
     sort!(svals, rev=true)
     return svals
 end
