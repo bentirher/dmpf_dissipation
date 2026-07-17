@@ -4,8 +4,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=24G
-#SBATCH --time=03:00:00
+#SBATCH --mem=32G
+#SBATCH --time=06:00:00
 #SBATCH --output=logs/direct_norm_%j.out
 #SBATCH --error=logs/direct_norm_%j.err
 
