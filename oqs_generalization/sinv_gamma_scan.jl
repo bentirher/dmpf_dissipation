@@ -68,42 +68,65 @@ rho0 = vectorized_initial_state_mps(lsites, initially_excited)
 
 gamma_values = [0.0, 0.005, 0.01, 0.02, 0.03, 0.04, 0.05]
 
-# sandwich <<rho0| left^a right^b |rho0>>
-function sandwich(left_mpo, a, right_mpo, b)
-    F = identity_liouville_mpo(lsites)
-    for _ in 1:b; F = right_multiply(F, right_mpo; cutoff=cutoff, maxdim=maxdim); end
-    for _ in 1:a; F = left_multiply(left_mpo, F;   cutoff=cutoff, maxdim=maxdim); end
-    return real(inner(rho0', F, rho0))
+# Faithful copy of build_open_F's clock-synchronized contraction, with the ONLY
+# change being that the left/bra operator is the INVERSE step MPO (step_i_inv)
+# instead of the adjoint (step_i_dag). The while-loop clock sync and the final
+# inner(rho0', F, rho0) contraction are byte-identical to the library, so at
+# gamma=0 this MUST reproduce the S^dag result exactly (built-in check).
+function build_open_F_inv_between(gammas, ks_left, ks_right, diss)
+    Id = identity_liouville_mpo(lsites)
+    comps = MPO[]
+    for i in eachindex(ks_left)
+        dt_i = t / ks_left[i]
+        step_i_inv = get_open_step_MPO_inv(n, J, gammas, dt_i, lsites, cutoff, maxdim; dissipation=diss)
+        for j in eachindex(ks_right)
+            dt_j = t / ks_right[j]
+            step_j = get_open_step_MPO(n, J, gammas, dt_j, lsites, cutoff, maxdim; order=order, dissipation=diss)
+            F = deepcopy(Id)
+            time_i = 0.0; time_j = 0.0
+            while (time_i < t - 1e-12) || (time_j < t - 1e-12)
+                if (time_j <= time_i) && (time_j < t - 1e-12)
+                    F = right_multiply(F, step_j; cutoff=cutoff, maxdim=maxdim)
+                    time_j += dt_j
+                elseif time_i < t - 1e-12
+                    F = left_multiply(step_i_inv, F; cutoff=cutoff, maxdim=maxdim)
+                    time_i += dt_i
+                end
+            end
+            push!(comps, F)
+        end
+    end
+    return comps
 end
 
 function coeffs_for_gamma(gamma)
     gammas = fill(gamma, n)
     diss = gamma > 0.0
+    r = length(ks)
 
-    # correct S^dag route via existing routines
+    # correct S^dag route via existing library routines
     M_dag, _ = open_gram_matrix(n, J, gammas, t, ks, lsites, rho0;
                                 cutoff=cutoff, maxdim=maxdim, order=order, dissipation=diss)
+    # NB: order_ref=2 here (not the library default of 1) so it matches the
+    # order-2 inverse reference below -- this isolates the dag-vs-inverse
+    # difference at gamma=0 rather than an order-1-vs-2 Trotter mismatch.
     L_dag, _ = open_L_vector(n, J, gammas, t, ks, k_ref_opt, lsites, rho0;
-                             cutoff=cutoff, maxdim=maxdim, order=order, order_ref=1, dissipation=diss)
+                             cutoff=cutoff, maxdim=maxdim, order=order, order_ref=2, dissipation=diss)
     c_dag, _ = dynamic_mpf_coefficients(M_dag, L_dag)
 
-    # S^{-1} route (F')
-    fwd = Dict(k => get_open_step_MPO(n, J, gammas, t/k, lsites, cutoff, maxdim;
-                                      order=order, dissipation=diss) for k in ks)
-    invs = Dict(k => get_open_step_MPO_inv(n, J, gammas, t/k, lsites, cutoff, maxdim;
-                                           dissipation=diss) for k in ks)
-    inv_ref = get_open_step_MPO_inv(n, J, gammas, t/k_ref_opt, lsites, cutoff, maxdim; dissipation=diss)
-
-    r = length(ks)
-    M_inv = zeros(Float64, r, r); L_inv = zeros(Float64, r)
+    # S^{-1} route (F'): identical contraction, inverse operator on the bra side
+    # M_inv: ks x ks   (mirrors build_open_F -> open_gram_matrix)
+    Ms = build_open_F_inv_between(gammas, ks, ks, diss)
+    M_inv = zeros(Float64, r, r)
+    idx = 1
     for i in 1:r, j in 1:r
-        M_inv[i,j] = sandwich(invs[ks[i]], ks[i], fwd[ks[j]], ks[j])
+        M_inv[i, j] = real(inner(rho0', Ms[idx], rho0)); idx += 1
     end
-    for j in 1:r
-        L_inv[j] = sandwich(inv_ref, k_ref_opt, fwd[ks[j]], ks[j])
-    end
-    c_inv, _ = dynamic_mpf_coefficients(M_inv, L_inv)
+    # L_inv: [k_ref] x ks   (mirrors build_open_F_between_lists -> open_L_vector)
+    Ls = build_open_F_inv_between(gammas, [k_ref_opt], ks, diss)
+    L_inv = [real(inner(rho0', Ls[j], rho0)) for j in 1:r]
 
+    c_inv, _ = dynamic_mpf_coefficients(M_inv, L_inv)
     return c_dag, c_inv, M_dag, M_inv
 end
 
