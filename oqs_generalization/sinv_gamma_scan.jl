@@ -112,7 +112,7 @@ function coeffs_for_gamma(gamma)
     # difference at gamma=0 rather than an order-1-vs-2 Trotter mismatch.
     L_dag, _ = open_L_vector(n, J, gammas, t, ks, k_ref_opt, lsites, rho0;
                              cutoff=cutoff, maxdim=maxdim, order=order, order_ref=2, dissipation=diss)
-    c_dag, _ = dynamic_mpf_coefficients(M_dag, L_dag)
+    c_dag, lam_dag = dynamic_mpf_coefficients(M_dag, L_dag)
 
     # S^{-1} route (F'): identical contraction, inverse operator on the bra side
     # M_inv: ks x ks   (mirrors build_open_F -> open_gram_matrix)
@@ -126,8 +126,11 @@ function coeffs_for_gamma(gamma)
     Ls = build_open_F_inv_between(gammas, [k_ref_opt], ks, diss)
     L_inv = [real(inner(rho0', Ls[j], rho0)) for j in 1:r]
 
-    c_inv, _ = dynamic_mpf_coefficients(M_inv, L_inv)
-    return c_dag, c_inv, M_dag, M_inv
+    c_inv, lam_inv = dynamic_mpf_coefficients(M_inv, L_inv)
+
+    cond_dag = cond(M_dag)
+    cond_inv = cond(M_inv)
+    return c_dag, c_inv, M_dag, M_inv, cond_dag, cond_inv, lam_dag, lam_inv
 end
 
 outdir = "sinv_scan_results"; mkpath(outdir)
@@ -135,15 +138,20 @@ rows = []
 
 for gamma in gamma_values
     println("[$(now())] gamma=$gamma ..."); flush(stdout)
+    local c_dag, c_inv, M_dag, M_inv, cond_dag, cond_inv, lam_dag, lam_inv
     t_g = @elapsed begin
-        c_dag, c_inv, M_dag, M_inv = coeffs_for_gamma(gamma)
+        c_dag, c_inv, M_dag, M_inv, cond_dag, cond_inv, lam_dag, lam_inv = coeffs_for_gamma(gamma)
     end
     maxdiff = maximum(abs.(c_dag .- c_inv))
     push!(rows, (gamma=gamma, c_dag=c_dag, c_inv=c_inv,
                  maxdiff=maxdiff, meanMdag=sum(M_dag)/length(M_dag),
-                 meanMinv=sum(M_inv)/length(M_inv)))
+                 meanMinv=sum(M_inv)/length(M_inv),
+                 cond_dag=cond_dag, cond_inv=cond_inv,
+                 lam_dag=lam_dag, lam_inv=lam_inv))
     println("[$(now())] gamma=$gamma done ($(round(t_g,digits=1))s): " *
             "c_dag=$(round.(c_dag,digits=4)) c_inv=$(round.(c_inv,digits=4)) maxdiff=$(round(maxdiff,digits=5))")
+    println("           cond(M_dag)=$(round(cond_dag,digits=1)) cond(M_inv)=$(round(cond_inv,digits=1)) " *
+            "lambda_dag=$(round(lam_dag,sigdigits=4)) lambda_inv=$(round(lam_inv,sigdigits=4))")
     flush(stdout)
 
     # correctness check at gamma=0
@@ -157,17 +165,18 @@ for gamma in gamma_values
 end
 
 open(joinpath(outdir, "gamma_scan.csv"), "w") do io
-    println(io, "gamma,c_dag_1,c_dag_2,c_inv_1,c_inv_2,max_coeff_diff,mean_M_dag,mean_M_inv")
+    println(io, "gamma,c_dag_1,c_dag_2,c_inv_1,c_inv_2,max_coeff_diff,mean_M_dag,mean_M_inv,cond_M_dag,cond_M_inv,lambda_dag,lambda_inv")
     for r in rows
         println(io, "$(r.gamma),$(r.c_dag[1]),$(r.c_dag[2]),$(r.c_inv[1]),$(r.c_inv[2])," *
-                    "$(r.maxdiff),$(r.meanMdag),$(r.meanMinv)")
+                    "$(r.maxdiff),$(r.meanMdag),$(r.meanMinv),$(r.cond_dag),$(r.cond_inv),$(r.lam_dag),$(r.lam_inv)")
     end
 end
 
 println("\n==== GAMMA SCAN SUMMARY (n=$n, maxdim=$maxdim, ks=$ks) ====")
-println("gamma   | max|c_dag-c_inv| | mean(M_dag) | mean(M_inv)")
+println("gamma   | max|dc| | cond(M_dag) | cond(M_inv) | mean(M_dag) | mean(M_inv)")
 for r in rows
-    println("$(rpad(r.gamma,7)) | $(rpad(round(r.maxdiff,digits=5),16)) | " *
+    println("$(rpad(r.gamma,7)) | $(rpad(round(r.maxdiff,digits=3),7)) | " *
+            "$(rpad(round(r.cond_dag,digits=1),11)) | $(rpad(round(r.cond_inv,digits=1),11)) | " *
             "$(rpad(round(r.meanMdag,digits=4),11)) | $(round(r.meanMinv,digits=4))")
 end
 println("\n[$(now())] wrote sinv_scan_results/gamma_scan.csv"); flush(stdout)
