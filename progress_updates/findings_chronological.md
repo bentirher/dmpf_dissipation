@@ -251,11 +251,10 @@ corruption"; this step is what disentangled them.)
 
 ![sandwich vs direct at n=5](fig_sandwich_vs_direct.svg)
 
-**At the actual study size the two AGREE.** The n=4 catastrophe did NOT reproduce at n=5,
+**At this single point the two AGREE** — but Step 15 shows this was a coincidence. The n=4 catastrophe did NOT reproduce at n=5,
 because maxdim=256 gives headroom above the true entanglement whereas n=4/maxdim=64 sat at
-the ceiling. So: **the n=5 sweep coefficients are correct and stand.** The sandwich route is
-more fragile than direct near the ceiling, but not wrong at n=5. (This walked back the
-alarm from Steps 11-12 honestly.)
+the ceiling. Provisional conclusion at this stage was "the n=5 sweep coefficients stand." **Step 15
+overturned this** — the agreement held only at gamma=0.05.
 
 ---
 
@@ -273,6 +272,49 @@ must be cheaper than full state simulation AND not simply be state simulation. T
 F-sandwich is correct but above that cost threshold; the direct route is below the threshold
 but on the wrong side of the logical line.
 
+
+---
+
+## Step 15 — Multi-gamma confirmation: the agreement was a fluke
+
+The Step 13 result rested on ONE gamma. Ran a 4-task array (`agreement_multigamma.jl`,
+one gamma per task) at n=5, maxdim=256, k_ref=40:
+
+        gamma   max|dc|   E achieved (sandwich)   E achieved (direct)   direct better by
+        0.01    0.113     1.67e-4                 6.37e-6               26x
+        0.02    0.028     1.86e-5                 9.57e-6               1.9x
+        0.05    0.003     2.69e-5                 2.68e-5               ~1x (tie)
+        0.10    0.093     9.85e-5                 5.77e-5               1.7x
+
+![multi-gamma agreement](fig_multigamma_agreement.svg)
+
+**3 of 4 gammas DISAGREE, and the direct route achieves lower error at EVERY gamma.** At
+gamma=0.01 the sandwich coefficients are 26x worse. This is not a flat-objective ambiguity —
+the achieved errors differ by more than an order of magnitude, so the sandwich coefficients
+are objectively inferior. gamma=0.05 was simply the outlier where they coincide, and it was
+the point tested first.
+
+**Mechanism.** max|dM| and max|dL| are small and roughly CONSTANT (~1e-3) at every gamma, yet
+max|dc| swings from 0.003 to 0.113. The near-degenerate Gram matrix (cond~800; the k=3 and
+k=8 states are nearly parallel) amplifies a fixed ~1e-3 truncation error in M/L into
+coefficient errors up to 0.11. Whether that amplification hurts depends on where one lands
+relative to the objective's minimum — hence the erratic gamma-dependence.
+
+**Silver linings:** E_k8 < E_k3 at every gamma (physical ordering fine — the states are OK,
+only the fitted combination is off), and the DMPF still beats the best single Trotter circuit
+in every case (gamma=0.01: 1.67e-4 vs E_k8 2.56e-4). So this is degraded accuracy, not a
+broken method.
+
+**Revised conclusion: the n=5 sandwich coefficients are NOT validated.** They leave
+significant accuracy on the table. And awkwardly, the only accurate route we have is the
+direct one — which is disqualified in principle (Step 14). The open problem tightens: a
+replacement must be BOTH cheaper than state simulation AND accurate enough that a cond~800
+fit does not amplify its truncation error.
+
+**Cheap mitigation to try first:** the amplification stems from the near-degenerate 2x2 M
+with ks=[3,8]. Better-separated k values (or more than two) could lower cond(M) and make the
+fit robust to the sandwich's ~1e-3 error — no new method required.
+
 ---
 
 ## Where we are now
@@ -280,7 +322,9 @@ but on the wrong side of the logical line.
 - Cluster workflow, BLAS pinning, and the maxdim rule are solved and documented.
 - The sweep is de-duplicated and uses a numerically-stable (direct-norm) ERROR estimator.
 - The MOC closed-vs-open experiment cleanly demonstrates why the open system is hard.
-- The n=5 DMPF coefficients are validated as correct (sandwich ~ direct).
+- The n=5 DMPF coefficients are NOT validated: the sandwich route is 2-26x worse than the
+  direct oracle across gamma (Step 15). Degraded accuracy, not a broken method (DMPF still
+  beats the best single circuit), but real error is being left on the table.
 - Two shortcuts are ruled out with clear mechanisms: direct overlaps (self-defeating), S^-1
   (blind to dissipation).
 - The direct Liouville-MPO method is effectively infeasible at n=6 on this hardware.
@@ -302,7 +346,14 @@ Candidate directions (must beat state simulation, must not BE state simulation):
 2. **Perturbative expansion in gamma.** Expand F around the cheap closed-system F_0 (bond dim
    1); leading corrections may be low-rank even if the full F is not. Exploits that only
    dissipation spoils the closed limit.
-3. **Estimate only the needed scalars.** M is 2x2; one needs a handful of overlaps, not all
+3. **Reduce the conditioning of the fit (cheapest thing to try first).** The ~1e-3
+   truncation error in the sandwich M/L is amplified into coefficient errors up to 0.11 by
+   the near-degenerate 2x2 Gram matrix (cond~800 with ks=[3,8]). Better-separated k values,
+   or more than two k values, could lower cond(M) enough that the EXISTING sandwich route
+   becomes accurate — no new representation needed. This attacks the amplification rather
+   than the input error, and it is cheap to test.
+
+4. **Estimate only the needed scalars.** M is 2x2; one needs a handful of overlaps, not all
    of F. Explore contraction paths or stochastic/sketching estimators for those scalars that
    beat both full-F and full-state cost.
 
@@ -312,8 +363,8 @@ De-prioritized / discarded:
 - Kraus representation — de-prioritized in earlier project discussions.
 - n=6 via direct Liouville-MPO — infeasible on this hardware without a cheaper representation.
 
-Quick confirmatory task before relying broadly on the sandwich coefficients: check that
-sandwich ~ direct agreement (Step 13) holds across a couple more gamma values / seeds at n=5.
+That confirmatory task is DONE and it FAILED (Step 15): agreement held only at gamma=0.05.
+Any future accuracy claim must be verified across gamma, never at a single point.
 
 ---
 

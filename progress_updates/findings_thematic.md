@@ -257,23 +257,54 @@ physically wrong: k=8 has the least Trotter error and should be weighted most.
   sandwich route were NOT an under-converged reference — they were the sandwich M/L
   truncation corruption, worst at n=4 because maxdim=64 sits exactly at the truncation
   ceiling.
-- **Head-to-head at n=5, maxdim=256 (the study size):** sandwich and direct AGREE.
+- **Head-to-head at n=5, maxdim=256 (the study size):** at gamma=0.05 the two routes agree,
+  BUT a multi-gamma confirmation showed this is a COINCIDENCE.
 
 ![sandwich vs direct at n=5](fig_sandwich_vs_direct.svg)
 
-        M: max|dM| = 1.0e-3 ;  L: max|dL| = 7.3e-4
-        c_sandwich = [-0.142, 1.142] ; c_direct = [-0.145, 1.145] ; max|dc| = 2.7e-3
-        E achieved: c_sandwich 2.689e-5 vs c_direct 2.683e-5  (essentially equal)
-        single-Trotter: E_k8 = 1.9e-4 << E_k3 = 1.05e-2  (physical ordering holds)
-        SANDWICH build ~10548 s (~2.9 h) vs DIRECT ~28 s.
+**Multi-gamma confirmation (n=5, maxdim=256, k_ref=40) — the decisive test:**
 
-**Conclusions (stated carefully).**
-- **The n=5 sweep coefficients are correct and stand.** The sandwich route is not producing
-  wrong coefficients at the study size.
-- The sandwich route IS more fragile than direct near the truncation ceiling; the alarming
-  n=4/maxdim=64 instability was a worst-case truncation regime, not a universal bug.
-- The direct route is ~375x faster AND cleaner — but see Section 9: it is disqualified as a
-  production route and usable only as a validation oracle.
+![multi-gamma agreement](fig_multigamma_agreement.svg)
+
+        gamma   max|dc|   E achieved (sandwich)   E achieved (direct)   direct better by
+        0.01    0.113     1.67e-4                 6.37e-6               26x
+        0.02    0.028     1.86e-5                 9.57e-6               1.9x
+        0.05    0.003     2.69e-5                 2.68e-5               ~1x (tie)
+        0.10    0.093     9.85e-5                 5.77e-5               1.7x
+
+        max|dM| ~ 1e-3 and max|dL| ~ 1e-3 at EVERY gamma (roughly constant)
+        E_k8 < E_k3 at every gamma (physical ordering always holds)
+
+**Conclusions (REVISED — this supersedes the single-point claim).**
+- **The n=5 sandwich coefficients are NOT validated.** The direct route achieves lower DMPF
+  error at EVERY gamma tested, by factors of ~2-26x. The gamma=0.05 agreement was the
+  outlier where the two happen to coincide, and it was the point we tested first.
+- **Mechanism:** the sandwich M/L carry a persistent ~1e-3 truncation error at maxdim=256
+  (consistent with the Gram convergence floor, 2.4e-3 relative between 192 and 256). The
+  near-degenerate Gram matrix (cond ~ 800, since the k=3 and k=8 states are nearly parallel)
+  AMPLIFIES that fixed ~1e-3 input error into coefficient errors of up to 0.11 — and whether
+  that hurts depends on where one lands relative to the objective's minimum, producing the
+  gamma-dependent, seemingly erratic pattern.
+- **Not catastrophic:** the DMPF still beats the best single Trotter circuit in every case
+  (e.g. gamma=0.01: sandwich 1.67e-4 vs E_k8 2.56e-4). But significant accuracy is left on
+  the table.
+- The physical ordering E_k8 < E_k3 holds throughout, so the underlying states are fine — the
+  problem is purely the fitted combination.
+- Cost: SANDWICH ~10548 s (~2.9 h) vs DIRECT ~28 s at n=5.
+
+**The awkward implication.** The only route found so far that computes the coefficients
+ACCURATELY is the direct one — which is disqualified in principle (Section 9a). So:
+- *Sandwich*: methodologically legitimate (does not presuppose state simulation) but
+  numerically degraded at maxdim=256, degradation amplified by the ill-conditioned fit.
+- *Direct*: accurate but self-defeating.
+This tightens the open problem: a replacement must be BOTH cheaper than state simulation AND
+accurate enough that a cond~800 fit does not amplify its truncation error into bad
+coefficients.
+
+**Cheap mitigation worth testing (attacks the amplification, not the input error):** the
+amplification comes from the near-degenerate 2x2 M with ks=[3,8]. Choosing better-separated
+k values, or using more than two, could reduce cond(M) and make the fit robust to the
+sandwich's ~1e-3 error — without needing a new method at all.
 
 Scripts: `sinv_gamma_scan.jl` (surfaced the objection), `coeff_sanity.jl`,
 `kref_convergence.jl`, `direct_vs_sandwich.jl`.
@@ -339,7 +370,14 @@ simulation):
    corrections may be low-rank even though the full F is not. Directly exploits that the
    closed limit is free and only dissipation spoils it.
 
-3. **Estimate only the needed scalars, not the full F.** M is just 2x2 (for ks=[3,8]); one
+3. **Reduce the conditioning of the fit (cheapest thing to try first).** The ~1e-3
+   truncation error in the sandwich M/L is amplified into coefficient errors up to 0.11 by
+   the near-degenerate 2x2 Gram matrix (cond~800 with ks=[3,8]). Better-separated k values,
+   or more than two k values, could lower cond(M) enough that the EXISTING sandwich route
+   becomes accurate — no new representation needed. This attacks the amplification rather
+   than the input error, and it is cheap to test.
+
+4. **Estimate only the needed scalars, not the full F.** M is just 2x2 (for ks=[3,8]); one
    needs a handful of scalar overlaps, not all of F. Explore contraction paths or
    stochastic / sketching estimators for those specific scalars that beat both full-F and
    full-state cost.
@@ -352,9 +390,10 @@ simulation):
 - **Pushing n=6 with the direct Liouville-MPO** — effectively infeasible on this hardware
   (Section 3); would need a fundamentally cheaper representation first.
 
-**Also worth a quick confirmatory pass:** verify sandwich ~ direct coefficient agreement
-(Section 8) holds across a couple more gamma values / seeds at n=5, to be airtight that the
-single tested point is not a fluke before relying on the sandwich coefficients broadly.
+**Status of that confirmatory pass: DONE, and it failed** (Section 8 / Step 15). The
+sandwich-direct agreement held only at gamma=0.05; across gamma the sandwich coefficients are
+2-26x worse in achieved error. Any future claim about coefficient accuracy must be checked
+across gamma, not at a single point.
 
 ---
 
