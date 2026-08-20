@@ -1,8 +1,15 @@
 using ITensors, ITensorMPS
 using LinearAlgebra
-include("open_middle_out_contraction.jl")   # brings in op_dag, left_multiply,
-                                            # right_multiply, get_open_step_MPO(_dag),
-                                            # identity_liouville_mpo, LiouvilleSites
+include("F_diagnostics.jl")   # top of the include chain -- pulls in, in order:
+                              #   F_diagnostics.jl            vectorized_initial_state_mps, expect_F
+                              #   bond_dimension_tracking.jl  middle_bond_dim
+                              #   open_middle_out_contraction op_dag, left/right_multiply, build_open_F
+                              #   open_product_formula_gen    get_open_step_MPO(_dag)
+                              #   liouville_space.jl          liouville_siteinds, identity_liouville_mpo
+                              #
+                              # Do NOT include open_middle_out_contraction.jl directly: it sits BELOW
+                              # F_diagnostics and bond_dimension_tracking in the chain, so
+                              # vectorized_initial_state_mps and middle_bond_dim would be undefined.
 
 # =============================================================================
 # trotter_error_gram.jl
@@ -87,7 +94,7 @@ _fnorm(X::Nothing) = 0.0
 _fnorm(X::MPO) = sqrt(abs(real(inner(X, X))))
 
 _expect(X::Nothing, rho0::MPS) = 0.0 + 0.0im
-_expect(X::MPO, rho0::MPS) = inner(rho0', X, rho0)
+_expect(X::MPO, rho0::MPS) = expect_F(X, rho0)   # = inner(rho0', X, rho0), F_diagnostics.jl
 
 
 # -----------------------------------------------------------------------------
