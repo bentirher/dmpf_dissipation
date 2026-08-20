@@ -21,7 +21,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=32G
 #SBATCH --time=08:00:00
-#SBATCH --array=0-2
+#SBATCH --array=0
 #SBATCH --output=logs/gauge_%A_%a.out
 #SBATCH --error=logs/gauge_%A_%a.err
 
@@ -44,7 +44,7 @@ esac
 export GAMMA=0.05
 export TVAL=3.0
 export K_REF=40
-export ORDER=1
+export ORDER=2
 
 echo "gauge_diagnostic  n=$N_QUBITS  md=$MD_LO vs $MD_HI  on $(hostname)"
 echo "start: $(date)"
