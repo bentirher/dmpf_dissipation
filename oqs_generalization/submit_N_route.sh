@@ -24,7 +24,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=32G
 #SBATCH --time=06:00:00
-#SBATCH --array=0-2
+#SBATCH --array=0-1
 #SBATCH --output=logs/nroute_%A_%a.out
 #SBATCH --error=logs/nroute_%A_%a.err
 
@@ -44,7 +44,7 @@ esac
 export GAMMA=0.05
 export TVAL=3.0
 export K0=48                 # multiple of both k_j = 3 and 8
-export ORDER=1
+export ORDER=2
 export K_REF_ORACLE=200
 
 echo "run_N_route  n=$N_QUBITS  maxdim=$MAXDIM  maxdim_G=$MAXDIM_G  steps=$STEPS  on $(hostname)"
