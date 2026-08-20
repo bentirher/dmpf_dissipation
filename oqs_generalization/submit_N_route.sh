@@ -24,7 +24,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=32G
 #SBATCH --time=06:00:00
-#SBATCH --array=0-1
+#SBATCH --array=0
 #SBATCH --output=logs/nroute_%A_%a.out
 #SBATCH --error=logs/nroute_%A_%a.err
 
@@ -36,7 +36,7 @@ export JULIA_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 case $SLURM_ARRAY_TASK_ID in
-  0) export N_QUBITS=4 MAXDIM=64  MAXDIM_G=32 STEPS=1   ;;
+  0) export N_QUBITS=4 MAXDIM=256  MAXDIM_G=256 STEPS=1   ;;
   1) export N_QUBITS=4 MAXDIM=64  MAXDIM_G=32 STEPS=123 ;;
   2) export N_QUBITS=5 MAXDIM=128 MAXDIM_G=48 STEPS=123 ;;
 esac
