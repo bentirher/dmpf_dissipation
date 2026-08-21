@@ -158,8 +158,12 @@ write("cmp_errors.csv",       join(rows_e, "\n") * "\n")
 # =============================================================================
 println("\n", "="^70); println("SPECTRA (untruncated, k=8 diagonal)"); println("="^70)
 
-F88   = build_open_F(n, J, gammas, t, 8, lsites, cutoff, chi_max;
-                     order=order, dissipation=true)
+F88   = build_open_F(n, J, gammas, t, [8], lsites, cutoff, chi_max;
+                     order=order, dissipation=true)[1]   # takes a LIST of k's and
+                                                          # returns Vector{MPO}, one
+                                                          # per (i,j) pair -- passing
+                                                          # a scalar silently returns
+                                                          # a 1-element vector
 pair  = build_Phi_pair(n, J, gammas, t, 8, 8, k0, lsites;
                        cutoff=cutoff, maxdim=chi_max, maxdim_G=chi_max,
                        order=order, order_ref=order, dissipation=true)
