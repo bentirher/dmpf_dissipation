@@ -156,7 +156,7 @@ function build_Phi_pair(n, J, gammas, t, k_i::Int, k_j::Int, k0::Int,
                         lsites::LiouvilleSites;
                         cutoff=1e-12, maxdim=128, maxdim_G=48,
                         order::Int=2, order_ref::Int=2, dissipation::Bool=true,
-                        trace::Bool=false)
+                        trace::Bool=false, identity_check::Bool=false)
 
     @assert k0 % k_i == 0 && k0 % k_j == 0 "k0 must be an integer multiple of every k_j"
 
@@ -184,6 +184,14 @@ function build_Phi_pair(n, J, gammas, t, k_i::Int, k_j::Int, k0::Int,
     time_j = 0.0
     hist = NamedTuple[]
 
+    # Optional companion object for the section-4.5 consistency check. Since
+    # F = G + Xi + Psi + Phi identically, running F through the SAME schedule
+    # and comparing at every step localises any sign or ordering error in the
+    # recursion to a single step and a single term. F here is built with the
+    # coarse steps A_i, A_j exactly as build_open_F does.
+    F_chk::MaybeMPO = identity_check ? identity_liouville_mpo(lsites) : nothing
+    id_resid = Float64[]
+
     while (time_i < t - 1e-12) || (time_j < t - 1e-12)
 
         if (time_j <= time_i) && (time_j < t - 1e-12)
@@ -199,6 +207,7 @@ function build_Phi_pair(n, J, gammas, t, k_i::Int, k_j::Int, k0::Int,
             G_new   = _rmul(G,  Rj.B; cutoff=cutoff, maxdim=maxdim_G)
 
             Phi, Psi, Xi, G = Phi_new, Psi_new, Xi_new, G_new
+            identity_check && (F_chk = _rmul(F_chk, Rj.A; cutoff=cutoff, maxdim=maxdim))
             time_j += dt_j
             side = :right
 
@@ -214,8 +223,18 @@ function build_Phi_pair(n, J, gammas, t, k_i::Int, k_j::Int, k0::Int,
             G_new   = _lmul(Bi_dag, G;   cutoff=cutoff, maxdim=maxdim_G)
 
             Phi, Psi, Xi, G = Phi_new, Psi_new, Xi_new, G_new
+            identity_check && (F_chk = _lmul(Ai_dag, F_chk; cutoff=cutoff, maxdim=maxdim))
             time_i += dt_i
             side = :left
+        end
+
+        if identity_check
+            # ||(G + Xi + Psi + Phi) - F||_F / ||F||_F
+            Ssum = _add(_add(G, Xi; cutoff=cutoff, maxdim=maxdim),
+                        _add(Psi, Phi; cutoff=cutoff, maxdim=maxdim);
+                        cutoff=cutoff, maxdim=maxdim)
+            D = _add(Ssum, -1 * F_chk; cutoff=cutoff, maxdim=maxdim)
+            push!(id_resid, _fnorm(D) / max(_fnorm(F_chk), eps()))
         end
 
         if trace
@@ -235,7 +254,8 @@ function build_Phi_pair(n, J, gammas, t, k_i::Int, k_j::Int, k0::Int,
         end
     end
 
-    return (Phi=Phi, G=G, Xi=Xi, Psi=Psi, history=hist)
+    return (Phi=Phi, G=G, Xi=Xi, Psi=Psi, history=hist,
+            F_check=F_chk, identity_residual=id_resid)
 end
 
 
