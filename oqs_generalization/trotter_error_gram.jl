@@ -133,7 +133,9 @@ end
 function step_defect_MPO(n, J, gammas, dt_coarse::Float64, q::Int,
                          lsites::LiouvilleSites, cutoff, maxdim;
                          order::Int=2, order_ref::Int=2, dissipation::Bool=true,
-                         exact_delta::Bool=true, verify::Bool=false)
+                         exact_delta::Bool=true, verify::Bool=false,
+                         compress_delta::Bool=false, compress_cutoff=1e-14,
+                         compress_tol=1e-10)
     A = get_open_step_MPO(n, J, gammas, dt_coarse, lsites, cutoff, maxdim;
                           order=order, dissipation=dissipation)
     B = reference_block_MPO(n, J, gammas, dt_coarse, q, lsites, cutoff, maxdim;
@@ -149,7 +151,24 @@ function step_defect_MPO(n, J, gammas, dt_coarse::Float64, q::Int,
     # holds by construction with nothing discarded. Cost: chi(delta) roughly
     # doubles, and delta is used twice per step.
     delta = if exact_delta
-        +(A, -1 * B; cutoff=0.0, maxdim=maxlinkdim(A) + maxlinkdim(B))
+        d = +(A, -1 * B; cutoff=0.0, maxdim=maxlinkdim(A) + maxlinkdim(B))
+        # The direct sum has chi(A)+chi(B), which can exceed the mathematical
+        # ceiling 16^min(l,n-l) -- a non-minimal representation, and delta is
+        # used twice per step. `truncate!` orthogonalizes into canonical form
+        # BEFORE the SVD, unlike whatever `+` does internally (M4 showed `+`'s
+        # truncation destroys the small term regardless of cutoff), so it may
+        # compress losslessly where `+` cannot. Guarded: if the reconstruction
+        # B + delta == A degrades past `compress_tol`, the uncompressed delta is
+        # kept instead.
+        if compress_delta
+            dc = deepcopy(d)
+            truncate!(dc; cutoff=compress_cutoff)
+            rec = +(B, dc; cutoff=0.0, maxdim=maxlinkdim(B) + maxlinkdim(dc))
+            bad = +(rec, -1 * A; cutoff=0.0, maxdim=maxlinkdim(rec) + maxlinkdim(A))
+            _fnorm(bad) / max(_fnorm(A), eps()) < compress_tol ? dc : d
+        else
+            d
+        end
     else
         +(A, -1 * B; cutoff=cutoff, maxdim=maxdim)
     end
@@ -180,7 +199,8 @@ function build_Phi_pair(n, J, gammas, t, k_i::Int, k_j::Int, k0::Int,
                         cutoff=1e-12, maxdim=128, maxdim_G=48,
                         order::Int=2, order_ref::Int=2, dissipation::Bool=true,
                         trace::Bool=false, identity_check::Bool=false,
-                        exact_delta::Bool=true, verify::Bool=false)
+                        exact_delta::Bool=true, verify::Bool=false,
+                        compress_delta::Bool=false)
 
     @assert k0 % k_i == 0 && k0 % k_j == 0 "k0 must be an integer multiple of every k_j"
 
@@ -192,10 +212,12 @@ function build_Phi_pair(n, J, gammas, t, k_i::Int, k_j::Int, k0::Int,
 
     Li = step_defect_MPO(n, J, gammas, dt_i, k0 ÷ k_i, lsites, cutoff, maxdim;
                          order=order, order_ref=order_ref, dissipation=dissipation,
-                         exact_delta=exact_delta, verify=verify)
+                         exact_delta=exact_delta, verify=verify,
+                         compress_delta=compress_delta)
     Rj = step_defect_MPO(n, J, gammas, dt_j, k0 ÷ k_j, lsites, cutoff, maxdim;
                          order=order, order_ref=order_ref, dissipation=dissipation,
-                         exact_delta=exact_delta, verify=verify)
+                         exact_delta=exact_delta, verify=verify,
+                         compress_delta=compress_delta)
 
     Ai_dag     = op_dag(Li.A)
     Bi_dag     = op_dag(Li.B)
