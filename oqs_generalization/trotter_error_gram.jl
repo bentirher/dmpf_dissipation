@@ -132,12 +132,35 @@ end
 
 function step_defect_MPO(n, J, gammas, dt_coarse::Float64, q::Int,
                          lsites::LiouvilleSites, cutoff, maxdim;
-                         order::Int=2, order_ref::Int=2, dissipation::Bool=true)
+                         order::Int=2, order_ref::Int=2, dissipation::Bool=true,
+                         exact_delta::Bool=true, verify::Bool=false)
     A = get_open_step_MPO(n, J, gammas, dt_coarse, lsites, cutoff, maxdim;
                           order=order, dissipation=dissipation)
     B = reference_block_MPO(n, J, gammas, dt_coarse, q, lsites, cutoff, maxdim;
                             order=order_ref, dissipation=dissipation)
-    delta = +(A, -1 * B; cutoff=cutoff, maxdim=maxdim)
+
+    # The recursion relies on B + delta == A EXACTLY: every update rule was
+    # derived by substituting A_j = B_j + delta_j, e.g.
+    #     G' + Xi' + Psi' + Phi' = (G+Xi)(B_j + delta_j) + (Psi+Phi)A_j
+    # collapses to F A_j only if that identity holds numerically. Compressing
+    # delta breaks it, and the resulting defect propagates into every step.
+    #
+    # exact_delta=true keeps the direct-sum bond dimension, so B + delta = A
+    # holds by construction with nothing discarded. Cost: chi(delta) roughly
+    # doubles, and delta is used twice per step.
+    delta = if exact_delta
+        +(A, -1 * B; cutoff=0.0, maxdim=maxlinkdim(A) + maxlinkdim(B))
+    else
+        +(A, -1 * B; cutoff=cutoff, maxdim=maxdim)
+    end
+
+    if verify
+        recon = +(B, delta; cutoff=0.0, maxdim=maxlinkdim(B) + maxlinkdim(delta))
+        D     = +(recon, -1 * A; cutoff=0.0, maxdim=maxlinkdim(recon) + maxlinkdim(A))
+        rel   = _fnorm(D) / max(_fnorm(A), eps())
+        @info "step_defect_MPO verify" dt=dt_coarse q=q exact_delta=exact_delta chi_A=maxlinkdim(A) chi_B=maxlinkdim(B) chi_delta=maxlinkdim(delta) norm_ratio=(_fnorm(delta)/_fnorm(A)) reconstruction_relerr=rel
+    end
+
     return (A=A, B=B, delta=delta)
 end
 
@@ -156,7 +179,8 @@ function build_Phi_pair(n, J, gammas, t, k_i::Int, k_j::Int, k0::Int,
                         lsites::LiouvilleSites;
                         cutoff=1e-12, maxdim=128, maxdim_G=48,
                         order::Int=2, order_ref::Int=2, dissipation::Bool=true,
-                        trace::Bool=false, identity_check::Bool=false)
+                        trace::Bool=false, identity_check::Bool=false,
+                        exact_delta::Bool=true, verify::Bool=false)
 
     @assert k0 % k_i == 0 && k0 % k_j == 0 "k0 must be an integer multiple of every k_j"
 
@@ -167,9 +191,11 @@ function build_Phi_pair(n, J, gammas, t, k_i::Int, k_j::Int, k0::Int,
     dt_i, dt_j = t / k_i, t / k_j
 
     Li = step_defect_MPO(n, J, gammas, dt_i, k0 ÷ k_i, lsites, cutoff, maxdim;
-                         order=order, order_ref=order_ref, dissipation=dissipation)
+                         order=order, order_ref=order_ref, dissipation=dissipation,
+                         exact_delta=exact_delta, verify=verify)
     Rj = step_defect_MPO(n, J, gammas, dt_j, k0 ÷ k_j, lsites, cutoff, maxdim;
-                         order=order, order_ref=order_ref, dissipation=dissipation)
+                         order=order, order_ref=order_ref, dissipation=dissipation,
+                         exact_delta=exact_delta, verify=verify)
 
     Ai_dag     = op_dag(Li.A)
     Bi_dag     = op_dag(Li.B)
@@ -271,7 +297,7 @@ function trotter_error_gram(n, J, gammas, t, ks, k0::Int,
                             lsites::LiouvilleSites, rho0::MPS;
                             cutoff=1e-12, maxdim=128, maxdim_G=48,
                             order::Int=2, order_ref::Int=2, dissipation::Bool=true,
-                            trace::Bool=false)
+                            trace::Bool=false, exact_delta::Bool=true)
     r = length(ks)
     N = zeros(Float64, r, r)
     traces = Dict{Tuple{Int,Int},Vector{NamedTuple}}()
@@ -280,7 +306,8 @@ function trotter_error_gram(n, J, gammas, t, ks, k0::Int,
         res = build_Phi_pair(n, J, gammas, t, ks[i], ks[j], k0, lsites;
                              cutoff=cutoff, maxdim=maxdim, maxdim_G=maxdim_G,
                              order=order, order_ref=order_ref,
-                             dissipation=dissipation, trace=trace)
+                             dissipation=dissipation, trace=trace,
+                             exact_delta=exact_delta)
         val = real(_expect(res.Phi, rho0))
         N[i, j] = val
         N[j, i] = val
@@ -341,11 +368,12 @@ end
 function test_dmpf_open_N(n, J, gammas, t, ks, k0, lsites::LiouvilleSites, rho0::MPS;
                           cutoff=1e-12, maxdim=128, maxdim_G=48,
                           order::Int=2, order_ref::Int=2, dissipation::Bool=true,
-                          trace::Bool=false)
+                          trace::Bool=false, exact_delta::Bool=true)
     N, traces = trotter_error_gram(n, J, gammas, t, ks, k0, lsites, rho0;
                                    cutoff=cutoff, maxdim=maxdim, maxdim_G=maxdim_G,
                                    order=order, order_ref=order_ref,
-                                   dissipation=dissipation, trace=trace)
+                                   dissipation=dissipation, trace=trace,
+                                   exact_delta=exact_delta)
     sol = trotter_error_coefficients(N)
     return (N=N, coeffs=sol.coeffs, E_mpf=sol.E_mpf, E_trot=sol.E_trot,
             eigvals=sol.eigvals, cond=sol.cond, n_clipped=sol.n_clipped,
