@@ -1,0 +1,360 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{amsmath,amssymb,graphicx,booktabs,xcolor,longtable,array}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+\usepackage{titlesec}
+\titleformat{\section}{\large\bfseries\color{blue!35!black}}{\thesection}{0.6em}{}
+\newcommand{\FF}{\mathbb{F}}\newcommand{\GG}{\mathbb{G}}\newcommand{\EE}{\mathbb{E}}
+\newcommand{\SS}{\mathbb{S}}\newcommand{\bad}{\textcolor{red!70!black}}
+\newcommand{\good}{\textcolor{green!45!black}}
+\title{\bfseries The Trotter-Error Gram Matrix\\[2pt]
+\large A reformulation of the open-system DMPF coefficient problem}
+\author{Working note --- open quantum system generalisation of dynamic MPF}
+\date{25 August 2026}
+\begin{document}\maketitle
+
+\begin{abstract}\noindent
+The DMPF coefficients for open systems were being obtained by combining three separately
+computed objects --- the Gram matrix $M$, the overlap vector $\vec L$ and the purity $P$ ---
+each of order $0.57$, whose combination is of order $10^{-4}$. This is a catastrophic
+cancellation. We show the cost function can be rewritten exactly so that the small quantity,
+the \emph{Trotter-error Gram matrix} $N$, is computed directly and the large one is never
+formed. Measured at $n=4$ against an exact reference: the assembly step of the old route
+amplifies truncation error by $\approx 550\times$ while the new route de-amplifies by
+$\approx 5.5\times$, a ratio of $3018$. The new route is $20$--$30\times$ more accurate at
+every bond dimension and never returns a negative squared norm, which the old route does at
+five of eight tested bond dimensions. \textbf{It does not reduce bond dimension and does not
+restore the closed-system near-identity cancellation}; $\Phi$ is in fact higher-rank than
+$\FF$. The contribution is numerical conditioning and correctness, not asymptotic efficiency.
+\end{abstract}
+
+\section{Summary: what this helps with, and what it does not}
+
+\begin{longtable}{@{}p{0.44\textwidth}p{0.52\textwidth}@{}}
+\toprule
+\multicolumn{2}{@{}l}{\bfseries \good{SOLVED --- demonstrated numerically}}\\
+\midrule
+Negative $E_{\rm mpf}$ (\S7 of \texttt{findings\_thematic}) &
+$N$ is a Gram matrix of error vectors, hence PSD by construction. Measured
+$\lambda_{\min}$: $M$-route negative at 5 of 8 bond dimensions, worst
+$-1.46\times10^{-2}$ against a true $+2.81\times10^{-5}$ (520$\times$, wrong sign);
+$N$-route negative at 2, worst $-5.3\times10^{-6}$ (16\,\% perturbation).\\[2pt]
+$E_{k_3}<E_{k_8}$ inversion (\S8) &
+$E_{k_j}=N_{jj}$, a diagonal Gram entry. Correctly ordered and positive at every
+bond dimension tested.\\[2pt]
+Coefficients unstable in $k_{\rm ref}$ (\S8) &
+$\vec L$ and $P$ are eliminated; only $k_0$ remains.\\[2pt]
+MPS-vs-MPO method mismatch (\S7) &
+$P$ removed from the pipeline entirely. \emph{Note}: $P$ was never inaccurate --- a
+Liouville MPS has Schmidt rank $\le 4^{\min(l,n-l)}=16$, below every \texttt{maxdim}
+tested, so \texttt{reference\_purity} was \emph{exact}. The failure was $P$ exact while
+$\vec L$ was truncated, which makes the gauge cancellation structurally unavailable.\\[2pt]
+Accuracy per unit bond dimension &
+$20$--$30\times$ better at every $\chi$. At $\chi=64$: $\max|\delta c| = 3.0\times10^{-3}$
+versus $9.1\times10^{-2}$.\\
+\midrule
+\multicolumn{2}{@{}l}{\bfseries \bad{NOT SOLVED --- measured and negative}}\\
+\midrule
+Bond dimension of the tracked object &
+$\chi_\Phi$ saturates the $16^{\min(l,n-l)}$ ceiling at the \emph{first} Trotter step,
+whereas $\chi_\GG$ takes ${\sim}13$ steps to climb $111\to256$. $\Phi$ is
+\emph{higher}-rank than $\FF$: effective rank at $10^{-3}$ retained weight is $193$
+for $\Phi$ versus $44$ for $\FF$. Mechanism: $\Delta_j=\SS_j-\EE$ is a difference of
+propagators, and differences generically carry higher Schmidt rank than either operand ---
+the same cancellation that makes $\|\Phi\|$ small makes $\chi_\Phi$ large.\\[2pt]
+The closed-system efficiency claim &
+Not restored. $\SS^\dagger\SS\neq\mathbb{1}$ for $\gamma>0$ stands. The interleaved
+left/right schedule here serves only to avoid forming a one-sided full-time propagator
+($\chi\sim e^{v_1t}$), not to keep the running object near identity.\\[2pt]
+Wall-clock cost &
+\emph{Worse.} At $n=4$, $\chi=256$: 770\,s versus ${\sim}80$\,s. Four tracked objects
+instead of one, plus an MPO addition per step. The driver is $\GG$, not $\delta$.\\[2pt]
+$E_{\rm mpf}$ itself &
+Unresolved in \emph{both} routes. $N$ is near rank-1 (all $\delta\rho_j$ are Trotter
+errors of the same dynamics, hence nearly parallel), so $\lambda_{\min}$ is tiny.
+$\vec c$ needs only the eigen\emph{vector} direction and converges; $E_{\rm mpf}$ needs
+the eigen\emph{value} magnitude and does not.\\[2pt]
+Monotonic convergence &
+Neither route converges monotonically in \texttt{maxdim}. Both show a pronounced bump at
+$\chi=128$. \textbf{Unexplained.}\\
+\bottomrule
+\end{longtable}
+
+\section{Diagnosis: why a reformulation was needed}
+
+\subsection{The magnitudes}
+At $n=4$, $\gamma=0.05$, $t=3$, $k=\{3,8\}$, order 2, with the exact ($\chi=256$, untruncated)
+reference:
+\[
+M_{ij},\,L_j,\,P \approx 0.57,\qquad
+E_{k_3}=1.33\times10^{-2},\quad E_{k_8}=2.50\times10^{-4},\quad E_{\rm mpf}=3.76\times10^{-5}.
+\]
+Inputs of order $0.57$; the answer four orders below. The cost function
+$C(\vec c)=P+\vec c^{\,T}M\vec c-2\vec L^{\,T}\vec c$ subtracts near-equal quantities.
+
+\subsection{The gauge structure}
+On the constraint set $\vec 1^{\,T}\vec c=1$, the perturbation
+\[
+M\to M+\vec u\vec 1^{\,T}+\vec 1\vec u^{\,T}+a\vec1\vec1^{\,T},\qquad
+\vec L\to\vec L+\vec u+a\vec1,\qquad P\to P+a
+\]
+leaves $C$ \emph{exactly} unchanged for any $\vec u,a$. So $(M,\vec L,P)$ carries $r+1$
+redundant directions: $r(r+1)/2+r+1$ numbers encode only $r(r+1)/2$. The invariant content is
+exactly $N_{ij}=M_{ij}-L_i-L_j+P$. The gauge directions carry ${\sim}0.57$; the invariant
+content carries $10^{-4}$ to $10^{-2}$.
+
+\subsection{Measured: the assembly amplifies, it does not cancel}
+The \texttt{gauge\_diagnostic} runs decompose the truncation error into gauge and residual parts:
+\begin{center}\small
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+case & $\|\delta M\|$ & $\|\delta\vec L\|$ & $|\delta P|$ & $\|\delta N\|$ & amplification & resid/gauge\\
+\midrule
+$n$=4, 32$\to$64 (ord.\ 1) & $7.2\times10^{-2}$ & $7.5\times10^{-2}$ & $0$ & $1.60\times10^{-1}$ & $1.54$ & $0.91$\\
+$n$=5, 64$\to$256 (ord.\ 1) & $1.7\times10^{-3}$ & $1.8\times10^{-3}$ & $0$ & $5.0\times10^{-3}$ & $2.04$ & $1.46$\\
+$n$=5, 128$\to$256 (ord.\ 1) & $3.8\times10^{-3}$ & $1.1\times10^{-2}$ & $0$ & $2.7\times10^{-2}$ & $2.40$ & $0.92$\\
+$n$=4, 32$\to$64 (ord.\ 2) & $2.6\times10^{-3}$ & $4.2\times10^{-3}$ & $0$ & $9.6\times10^{-3}$ & $1.95$ & $1.77$\\
+$n$=4, 64$\to$256 (ord.\ 2) & $5.5\times10^{-3}$ & $2.2\times10^{-3}$ & $0$ & $1.13\times10^{-2}$ & $1.90$ & $0.67$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\textbf{The combination amplifies input error by a stable factor ${\approx}2$.} With
+$\delta P=0$ identically (purity is exact), $\delta N_{ij}=\delta M_{ij}-\delta L_i-\delta L_j$:
+each $\delta\vec L$ enters twice with the same sign. Check the last row:
+$5.5\times10^{-3}+2(2.2\times10^{-3})=9.9\times10^{-3}$ against a measured $1.13\times10^{-2}$
+--- near-perfect constructive addition. \emph{There is no cancellation to rely on.}
+Note also that the $n=4$, 64$\to$256 row has resid/gauge $=0.67$: a majority of that error
+\emph{was} gauge, and it still destroyed the answer.
+
+\subsection{$\FF$ and $\GG$ are the same object}
+\begin{center}\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+ & $\|\cdot\|_F$ & $\sigma_1$ & $\sigma_1^2/\mathrm{tot}$ & eff.\ rank @$10^{-3}$ & $\sigma_2/\sigma_1$\\
+\midrule
+$\FF=\SS^\dagger\SS$ & $9.3986$ & $9.3317$ & $98.58\%$ & $44$ & $0.0499$\\
+$\GG=\EE^\dagger\EE$ & $9.3972$ & $9.3340$ & $98.66\%$ & $40$ & $0.0474$\\
+$\Xi=\Delta^\dagger\EE$ & $0.1796$ & $0.0599$ & $11.1\%$ & $129$ & $0.981$\\
+$\Phi=\Delta^\dagger\Delta$ & $\mathbf{0.0061}$ & $0.0036$ & $35.4\%$ & $193$ & $0.380$\\
+\bottomrule
+\end{tabular}
+\end{center}
+\[
+\frac{\sum_i(\sigma_i^\FF-\sigma_i^\GG)^2}{\|\FF\|_F^2}=2.24\times10^{-5},
+\qquad \frac{\|\Phi\|_F^2}{\|\FF\|_F^2}=4.2\times10^{-7}.
+\]
+The part of $\FF$ that determines the coefficients is four parts in ten million of its
+Frobenius weight. \textbf{Deck slides 22, 23 and 27 were characterising $\EE^\dagger\EE$.}
+Slide 27's conclusion sharpens from ``computing $\FF$ is unfeasible'' to ``$\FF$ is the wrong
+object: $99.99996\%$ of its weight cancels.''
+
+\section{The reformulation}
+
+\subsection{Derivation}
+Because $\sum_jc_j=1$ we may write $\rho(t)=\big(\sum_jc_j\big)\rho(t)$, hence
+\[
+\mu(t)-\rho(t)=\sum_jc_j\big[\rho_{k_j}(t)-\rho(t)\big]=\sum_jc_j\,\delta\rho_j .
+\]
+The MPF residual is a combination of \emph{errors}, not of \emph{states}. Therefore
+\[
+\boxed{\;C(\vec c)=\vec c^{\,T}N\vec c,\qquad N_{ij}=\mathrm{Tr}\big[\delta\rho_i\,\delta\rho_j\big]
+=\langle\langle\rho_0|\Delta_i^\dagger\Delta_j|\rho_0\rangle\rangle,\qquad \Delta_j=\SS_j-\EE\;}
+\]
+a pure quadratic form: no linear term, no constant. Then
+\[
+\vec c=\frac{N^{-1}\vec1}{\vec1^{\,T}N^{-1}\vec1},\qquad
+E_{\rm mpf}=\frac{1}{\vec1^{\,T}N^{-1}\vec1},\qquad E_{k_j}=N_{jj}.
+\]
+Substituting $\SS_j=\EE+\Delta_j$ shows what is removed:
+$\FF_{ij}=\GG+\Xi_i+\Psi_j+\Phi_{ij}$ with $\GG$ of order 1 and $i,j$-independent (it cancels),
+$\Xi,\Psi$ first order, and only $\Phi$ surviving.
+
+\subsection{Assumptions}
+\textbf{A1} Hermiticity, so all scalars are real. \textbf{A2} $\mathrm{Tr}\,\rho_{k_j}=1$: holds
+because $\mathrm{Tr}(\mathcal{L}[\rho])=0$ identically, so $e^{s\mathcal{L}}$ is trace-preserving
+for \emph{every} real $s$ --- this survives the negative substep of order 4 (the \S5.3 caveat
+concerns positivity only). \textbf{A3} adjoint, not inverse. \textbf{A4} $\EE=S(t/k_0)^{k_0}$ is
+finite, so $N$ measures error relative to that reference. \textbf{A5} $k_0$ divisible by every
+$k_j$. \textbf{A6} time-independent generator, so factors may be appended on either side.
+
+\paragraph{Limitation L1.} The $N$ and $(M,\vec L,P)$ forms agree \emph{only} on
+$\vec1^{\,T}\vec c=1$. Relaxing the constraint breaks the equivalence.
+
+\subsection{Algorithm: the four-object recursion}
+With $A_j=S(t/k_j)$, $\mathcal{B}_j=S(t/k_0)^{k_0/k_j}$ (the reference over the \emph{same}
+duration) and $\delta_j=A_j-\mathcal{B}_j$, track at independent clocks $(t_a,t_b)$:
+\[
+\GG=\EE(t_a)^\dagger\EE(t_b),\quad \Xi_i=\Delta_i(t_a)^\dagger\EE(t_b),\quad
+\Psi_j=\EE(t_a)^\dagger\Delta_j(t_b),\quad \Phi_{ij}=\Delta_i(t_a)^\dagger\Delta_j(t_b).
+\]
+\begin{center}\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+& advance right clock (one $A_j$) & advance left clock (one $A_i$)\\
+\midrule
+$\GG$ & $\GG\,\mathcal{B}_j$ & $\mathcal{B}_i^\dagger\GG$\\
+$\Xi_i$ & $\Xi_i\,\mathcal{B}_j$ & $A_i^\dagger\Xi_i+\delta_i^\dagger\GG$\\
+$\Psi_j$ & $\Psi_jA_j+\GG\,\delta_j$ & $\mathcal{B}_i^\dagger\Psi_j$\\
+$\Phi_{ij}$ & $\Phi_{ij}A_j+\Xi_i\,\delta_j$ & $A_i^\dagger\Phi_{ij}+\delta_i^\dagger\Psi_j$\\
+\bottomrule
+\end{tabular}
+\end{center}
+Initial: $\GG=\mathbb{1}$, $\Xi=\Psi=\Phi=0$. Schedule: advance whichever clock is behind ---
+identical to the loop in \texttt{build\_open\_F}. Consistency check: on a right advance,
+$(\GG{+}\Xi)(\mathcal{B}_j{+}\delta_j)+(\Psi{+}\Phi)A_j=\FF A_j$, since
+$\mathcal{B}_j+\delta_j=A_j$. \textbf{This identity is load-bearing: every update rule was
+derived from it, and it must hold numerically.}
+
+\paragraph{Why left \emph{and} right multiplication.} Each object is a sandwich, so advancing
+$t_a$ appends left and $t_b$ appends right. Running all right steps first would leave
+$\GG=\EE(t_b)$ --- a bare full-time propagator with $\chi\sim g e^{v_1t}$ (Appendix A of the
+closed-system paper). Interleaving keeps the objects \emph{balanced}. This is the only job the
+ordering does here; in the closed system it additionally forces $\chi=1$ via
+$U^\dagger U=\mathbb{1}$, and that mechanism is gone for $\gamma>0$.
+
+\section{Results}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{fig1_slide26.png}
+\caption{Deck slide 26, as presented and re-examined. (a) The original $n=5$ $M$-route
+coefficients. (b) The same run's $E_{\rm mpf}$ with the sign exposed: \emph{three of the four
+points are negative}, which the absolute-value axis concealed. $E_{\rm mpf}$ is a squared norm.
+(c) $n=4$ against the exact untruncated reference: the $M$-route wanders (its $\chi=96$ point,
+$c_1=-10.8$, is off-scale) while the $N$-route sits on the exact value from $\chi=32$.}
+\end{figure}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{fig2_money.png}
+\caption{Accuracy against exact ground truth, $n=4$. (a) Coefficient error. The $M$-route is
+non-monotonic and never below $10^{-3}$ except at the exact point; the $N$-route is bounded in
+$[10^{-4},2\times10^{-2}]$ for all $\chi\ge32$. (b) The single-Trotter error $E_{k_8}$: hollow
+markers are \emph{negative} values of a squared norm. The $M$-route is negative at three bond
+dimensions and wrong by 800--3800\,\% elsewhere; the $N$-route is positive everywhere and within
+8\,\% from $\chi=48$ on.}
+\end{figure}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{fig3_psd.png}
+\caption{(a) $\lambda_{\min}(N)$, which must be positive. (b) $E_{\rm mpf}$ is unresolved in
+\emph{both} routes --- a genuine limitation, not a defect of either. $N$ is near rank-1, so
+$\vec c$ (eigenvector direction) converges while $E_{\rm mpf}$ (eigenvalue magnitude) does not.}
+\end{figure}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{fig4_amplification.png}
+\caption{The central quantitative result. (a) Schmidt weight discarded by truncation versus the
+resulting error in $\vec c$. The $M$-route discards ${\sim}10^{-4}$ of $\FF$ and loses the answer;
+the $N$-route discards up to $29\%$ of $\Phi$ and keeps it. (b) Amplification, i.e.\ error in
+$\vec c$ per unit weight discarded: geometric mean $548$ ($M$) versus $0.182$ ($N$), a ratio of
+$3018$. \textbf{$\Phi$ does not compress --- it does not need to.}}
+\end{figure}
+
+\begin{figure}[htbp]\centering
+\includegraphics[width=\textwidth]{fig5_spectra.png}
+\caption{Deck slide 23 revisited, $n=4$, $k=8$, untruncated. (a) Absolute singular values.
+(b) Normalised --- \emph{misleading}, because $\FF$'s $\sigma_1$ is the $\GG$ piece that cancels
+out of the answer, making its tail look negligible when that tail is the entire signal.
+(c) $\FF$ and $\GG$ coincide to $2.2\times10^{-5}$: the bond-dimension study was measuring
+$\EE^\dagger\EE$.}
+\end{figure}
+
+\clearpage
+\section{Numerical pitfalls discovered (general, and costly)}
+
+Four rounds of debugging were spent on these. They apply anywhere in this project where two
+near-equal MPOs are subtracted --- which is the premise of the $N$-route.
+
+\begin{enumerate}
+\item\textbf{\texttt{maxdim} governs the loss in MPO addition; \texttt{cutoff} does nothing.}
+Adding a large and a small MPO preserves the small term only if
+$\texttt{maxdim}\ge\chi(A)+\chi(B)$. Once rank truncation occurs, the retained directions
+represent the \emph{sum} (dominated by the large term) and the small term's distinct directions
+are discarded. Measured: at \texttt{maxdim}$=16$ the small term was lost with $95\%$ relative
+error for cutoffs $10^{-12}$, $10^{-14}$, $10^{-16}$ \emph{and exactly $0$} --- identical
+results.
+
+\item\textbf{\texttt{+} on MPS/MPO defaults to \texttt{alg="densitymatrix"}}, which forms
+$\rho=MM^\dagger$ and diagonalises, costing half the available digits
+($\sqrt{\varepsilon_{\rm mach}}\approx1.5\times10^{-8}$). Use \texttt{alg="directsum"} for
+differences of near-equal operators; it takes \emph{no} \texttt{cutoff}/\texttt{maxdim}
+(passing them raises a \texttt{MethodError}).
+
+\item\textbf{$\sqrt{\texttt{inner}(X,X)}$ cannot resolve a difference below
+$\sqrt{\varepsilon}\|A\|$.} It computes a squared quantity by contraction, so measuring
+$\|B+\delta-A\|$ requires cancelling terms of order $\|A\|^2$ down to $(\varepsilon\|A\|)^2$.
+Any claim of the form ``verified to $10^{-15}$'' about a difference of large MPOs is an
+artifact. This bit us twice in opposite directions: a density-matrix subtraction once reported
+$2.9\times10^{-15}$ for a true value of $1.5\times10^{-8}$.
+
+\item\textbf{\texttt{maxdim} must never exceed $16^{\min(l,n-l)}$} (16/256/256/4096 for
+$n=3/4/5/6$). A loose \texttt{maxdim} forces enormous intermediate tensors before truncation.
+Also: pin BLAS threads in \emph{both} Julia and the batch script.
+\end{enumerate}
+
+\section{Open issues}
+
+\begin{enumerate}
+\item\textbf{A floor at $\max|\delta c|\approx1.0\times10^{-4}$ at $\chi=256$, where nothing is
+truncated.} Ruled out: \texttt{op\_dag} ($3\times10^{-15}$); reference pre-composition
+($8.5\times10^{-7}$); \texttt{cutoff} ($10^{-12}\to10^{-15}$ moves it only
+$1.6\to0.97\times10^{-4}$); the $\delta$ construction (bounded at $10^{-8}$ by the measurement
+floor, giving ${\lesssim}5\times10^{-6}$ after amplification by $\mathrm{cond}(N)=483$).
+Switching to \texttt{alg="directsum"} changed the sweep by less than $1\%$. \textbf{Cause
+unidentified; likely upstream in $A$ or $\mathcal{B}$.}
+
+\item\textbf{Non-monotonic convergence in both routes}, with a pronounced bump at $\chi=128$.
+Unexplained, and the kind of thing a referee will ask about.
+
+\item\textbf{The reference is not converged.} $k_0:48\to96$ shifts $E_{k_8}$ by $+6.3\%$. The
+$n=4$ ``exact'' point is exact in the sense of \emph{untruncated}, not \emph{physically
+correct}. Fine for an $M$-vs-$N$ comparison (both use it), but $E_{k_8}=2.5\times10^{-4}$ is not
+the physical value.
+
+\item\textbf{The $k=3$ branch is badly conditioned} (L5): $\|\delta_3\|/\|A_3\|=9.3\times10^{-2}$
+versus $6.0\times10^{-3}$ for $k=8$, because the $k=3$ block spans $t/3=1.0$. Fix: subdivide the
+coarse step so every defect spans a short interval.
+
+\item\textbf{Only $\gamma=0.05$ has been tested.} Slide 22 swept
+$\gamma\in\{0.01,0.05,0.1,0.2\}$. Whether the $3018\times$ amplification advantage survives at
+$\gamma=0.2$ is untested and is the single most important open question.
+\end{enumerate}
+
+\section{Recommended next steps}
+\begin{enumerate}
+\item\textbf{$\gamma$ sweep} (highest value). Repeat the $n=4$ head-to-head at
+$\gamma\in\{0.01,0.1,0.2\}$; plot $\max|\delta c|$ at fixed $\chi=32$ versus $\gamma$ for both
+routes. Direct successor to slide 22 and the most persuasive summary figure available.
+\item\textbf{Subdivide the $k=3$ coarse step} and re-measure $N_{11}$.
+\item\textbf{Do not chase the $10^{-4}$ floor further.} It sits four orders below the error of
+the route it replaces, which additionally returns negative squared norms. No conclusion in this
+document depends on it.
+\item\textbf{For an asymptotic efficiency claim}, neither of the two structural obstacles is
+addressed here: $\GG$ saturates, and $\Phi$ saturates immediately because it is a difference.
+The candidates remain the KMS/detailed-balance inner product (under which
+$\GG\to e^{2t\mathcal{L}_D}$ becomes a genuine contraction, bond dimension 1 for on-site
+dissipators --- and for which the \emph{dephasing} test is nearly free, since KMS $=$ HS for
+unital dissipators), the $\gamma$-expansion, or temporal/influence-matrix contraction.
+\end{enumerate}
+
+\section{Code}
+\textbf{New:} \texttt{trotter\_error\_gram.jl} (library), \texttt{gauge\_diagnostic.jl},
+\texttt{comparison\_study.jl}, \texttt{spectra\_study.jl}, \texttt{systematic\_diagnostic.jl},
+\texttt{identity\_localise.jl}, \texttt{delta\_microtest.jl}, \texttt{directsum\_test.jl},
+\texttt{delta\_fix\_verify.jl}, plus \texttt{submit\_*.sh}.
+
+\textbf{Replaced:} \texttt{open\_gram\_matrix}, \texttt{open\_L\_vector},
+\texttt{reference\_purity}, \texttt{dynamic\_mpf\_coefficients},
+\texttt{open\_dynamic\_mpf\_error}, \texttt{open\_single\_trotter\_errors} --- six functions
+collapse to \texttt{trotter\_error\_gram} $+$ \texttt{trotter\_error\_coefficients}.
+
+\textbf{Reused unchanged:} \texttt{liouville\_space.jl},
+\texttt{open\_product\_formula\_generation.jl}, the \texttt{op\_dag}/\texttt{left\_multiply}/
+\texttt{right\_multiply} helpers and two-clock schedule in
+\texttt{open\_middle\_out\_contraction.jl}, \texttt{bond\_dimension\_tracking.jl},
+\texttt{F\_diagnostics.jl}.
+
+\textbf{Include chain:} \texttt{include("F\_diagnostics.jl")} pulls the whole stack. Including
+\texttt{open\_middle\_out\_contraction.jl} directly leaves
+\texttt{vectorized\_initial\_state\_mps} and \texttt{middle\_bond\_dim} undefined.
+
+\end{document}
