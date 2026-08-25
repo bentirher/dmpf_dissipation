@@ -1,18 +1,19 @@
 # =============================================================================
-# directsum_test.jl
+# directsum_test.jl  (v2)
 #
-# V1 showed ||B + delta - A||/||A|| = 3.03e-8 for k=8 even with cutoff=0.0 and
-# maxdim = chi(A)+chi(B), while truncate! reproduced that error to all eight
-# digits. So the defect is introduced BY `+`, not by any subsequent truncation.
+# v1 failed because alg="directsum" takes NO cutoff/maxdim -- it is an exact
+# direct sum, so truncation parameters are meaningless and rejected.
 #
-# 3.03e-8 ~ 2*sqrt(eps). That is the fingerprint of a density-matrix algorithm:
-# forming rho = M M^dag and diagonalizing squares the singular values and costs
-# half the available digits. ITensorMPS's add/+ defaults to
-# alg="densitymatrix"; alg="directsum" performs a genuine direct sum with no
-# fitting.
+# v1 also revealed that the DIAGNOSTIC was broken, not just the construction:
+# measured with directsum, the k=3 reconstruction error is 1.46e-8, whereas V1
+# (measuring with the default density-matrix `+`) reported 2.95e-15. The
+# density-matrix subtraction was losing the difference it was measuring.
 #
-# If alg="directsum" drops the k=8 reconstruction to ~1e-15, that is the last
-# numerical defect in the delta construction. Cheap: minutes at n=4.
+# Conclusion: ITensorMPS's default `+` carries sqrt(eps) ~ 1.5e-8 accuracy.
+# This script confirms directsum fixes the construction and checks whether
+# truncate! can then bring chi(delta) back below the ceiling losslessly --
+# which matters because exact delta at chi(A)+chi(B) = 272 drove the chi=256
+# runtime from ~80 s to 1232 s.
 # =============================================================================
 import Distributions, Random
 using LinearAlgebra, Printf
@@ -25,35 +26,36 @@ Random.seed!(1234)
 J = rand(Distributions.Uniform(1/4,3/4), n-1); gammas = fill(gamma,n)
 lsites = liouville_siteinds(n)
 
+# ALWAYS measure differences with directsum.
 exrel(X,Y) = _fnorm(+(X, -1*Y; alg="directsum")) / max(_fnorm(Y), eps())
 
-println("ITensorMPS add algorithms: densitymatrix (default) vs directsum\n")
-println(" k | alg            | chi(delta) | ||d||/||A|| | ||B+d-A||/||A||")
-println("-"^72)
+println("n=$n ceiling=$chi   all differences measured with alg=directsum\n")
+println(" k | delta built by            | chi(delta) | ||d||/||A|| | ||B+d-A||/||A||")
+println("-"^78)
 for kj in (3, 8)
     dt, q = t/kj, k0 ÷ kj
     A = get_open_step_MPO(n, J, gammas, dt, lsites, 1e-14, chi; order=order, dissipation=true)
     B = reference_block_MPO(n, J, gammas, dt, q, lsites, 1e-14, chi; order=order, dissipation=true)
     nA = _fnorm(A)
-    for alg in ("densitymatrix", "directsum")
-        d = try
-            +(A, -1*B; alg=alg, cutoff=0.0, maxdim=maxlinkdim(A)+maxlinkdim(B))
-        catch e
-            println("  alg=$alg unsupported: $e"); continue
-        end
-        rec = +(B, d; alg="directsum")
-        @printf("%2d | %-14s | %10d | %.4e | %.4e\n", kj, alg, maxlinkdim(d), _fnorm(d)/nA, exrel(rec, A))
+
+    d_dm = +(A, -1*B; cutoff=0.0, maxdim=maxlinkdim(A)+maxlinkdim(B))
+    @printf("%2d | %-25s | %10d | %.4e | %.4e\n", kj, "densitymatrix (default)",
+            maxlinkdim(d_dm), _fnorm(d_dm)/nA, exrel(+(B, d_dm; alg="directsum"), A))
+    flush(stdout)
+
+    d_ds = +(A, -1*B; alg="directsum")
+    @printf("%2d | %-25s | %10d | %.4e | %.4e\n", kj, "directsum",
+            maxlinkdim(d_ds), _fnorm(d_ds)/nA, exrel(+(B, d_ds; alg="directsum"), A))
+    flush(stdout)
+
+    for cc in (1e-16, 1e-14, 1e-12, 1e-10)
+        dc = deepcopy(d_ds); truncate!(dc; cutoff=cc)
+        @printf("%2d | %-25s | %10d | %.4e | %.4e\n", kj, "  directsum+trunc $cc",
+                maxlinkdim(dc), _fnorm(dc)/nA, exrel(+(B, dc; alg="directsum"), A))
         flush(stdout)
-        # does truncate! stay lossless on the directsum result?
-        if alg == "directsum"
-            for cc in (1e-14, 1e-12)
-                dc = deepcopy(d); truncate!(dc; cutoff=cc)
-                @printf("%2d | %-14s | %10d | %.4e | %.4e\n", kj, "  +trunc $cc",
-                        maxlinkdim(dc), _fnorm(dc)/nA, exrel(+(B, dc; alg="directsum"), A))
-                flush(stdout)
-            end
-        end
     end
 end
-println("\n-> directsum at ~1e-15 for BOTH k means the delta construction is finally clean.")
-println("   If k=8 stays at 3e-8, the defect is upstream in A or B, not in the sum.")
+println("""
+-> directsum at ~1e-15 for BOTH k confirms the construction is clean.
+   Then pick the LARGEST truncate! cutoff that holds ~1e-13: that is the
+   compress_cutoff to set, and it recovers the runtime lost to chi(delta)=272.""")

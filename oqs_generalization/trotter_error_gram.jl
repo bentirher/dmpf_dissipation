@@ -151,20 +151,28 @@ function step_defect_MPO(n, J, gammas, dt_coarse::Float64, q::Int,
     # holds by construction with nothing discarded. Cost: chi(delta) roughly
     # doubles, and delta is used twice per step.
     delta = if exact_delta
-        d = +(A, -1 * B; cutoff=0.0, maxdim=maxlinkdim(A) + maxlinkdim(B))
-        # The direct sum has chi(A)+chi(B), which can exceed the mathematical
-        # ceiling 16^min(l,n-l) -- a non-minimal representation, and delta is
-        # used twice per step. `truncate!` orthogonalizes into canonical form
-        # BEFORE the SVD, unlike whatever `+` does internally (M4 showed `+`'s
-        # truncation destroys the small term regardless of cutoff), so it may
-        # compress losslessly where `+` cannot. Guarded: if the reconstruction
-        # B + delta == A degrades past `compress_tol`, the uncompressed delta is
-        # kept instead.
+        # ITensorMPS's default `+` is DENSITY-MATRIX based: it forms rho = M M^dag
+        # and diagonalizes, which squares the singular values and therefore
+        # carries only sqrt(eps_mach) ~ 1.5e-8 accuracy. That is fatal here,
+        # because delta = A - B is a difference of near-equal operators
+        # (||delta||/||A|| = 6e-3 for k=8) and the recursion requires
+        # B + delta == A to hold numerically -- every update rule was derived by
+        # substituting A_j = B_j + delta_j.
+        #
+        # alg="directsum" performs a genuine direct sum with no fitting, so it
+        # takes NO cutoff/maxdim (passing them is a MethodError). It is exact by
+        # construction, at the price of chi(delta) = chi(A) + chi(B).
+        #
+        # NOTE: this default also silently corrupted our DIAGNOSTICS -- a
+        # density-matrix subtraction used to MEASURE ||B + delta - A|| loses the
+        # very difference it is measuring, and reported 3e-15 where the true
+        # value was 1.5e-8. Always measure differences with alg="directsum".
+        d = +(A, -1 * B; alg="directsum")
         if compress_delta
             dc = deepcopy(d)
-            truncate!(dc; cutoff=compress_cutoff)
-            rec = +(B, dc; cutoff=0.0, maxdim=maxlinkdim(B) + maxlinkdim(dc))
-            bad = +(rec, -1 * A; cutoff=0.0, maxdim=maxlinkdim(rec) + maxlinkdim(A))
+            truncate!(dc; cutoff=compress_cutoff)   # SVD-based, eps-accurate
+            rec = +(B, dc; alg="directsum")
+            bad = +(rec, -1 * A; alg="directsum")
             _fnorm(bad) / max(_fnorm(A), eps()) < compress_tol ? dc : d
         else
             d
@@ -174,8 +182,10 @@ function step_defect_MPO(n, J, gammas, dt_coarse::Float64, q::Int,
     end
 
     if verify
-        recon = +(B, delta; cutoff=0.0, maxdim=maxlinkdim(B) + maxlinkdim(delta))
-        D     = +(recon, -1 * A; cutoff=0.0, maxdim=maxlinkdim(recon) + maxlinkdim(A))
+        # Measured with directsum: a density-matrix subtraction loses the very
+        # difference it is measuring (it reported 3e-15 for a true 1.5e-8).
+        recon = +(B, delta; alg="directsum")
+        D     = +(recon, -1 * A; alg="directsum")
         rel   = _fnorm(D) / max(_fnorm(A), eps())
         @info "step_defect_MPO verify" dt=dt_coarse q=q exact_delta=exact_delta chi_A=maxlinkdim(A) chi_B=maxlinkdim(B) chi_delta=maxlinkdim(delta) norm_ratio=(_fnorm(delta)/_fnorm(A)) reconstruction_relerr=rel
     end
