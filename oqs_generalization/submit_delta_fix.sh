@@ -17,7 +17,7 @@ module load Julia/1.11.6-linux-x86_64
 export JULIA_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
-export N_QUBITS=4 GAMMA=0.05 TVAL=3.0 K0=48 ORDER=2 STAGES=12
+export N_QUBITS=4 GAMMA=0.05 TVAL=3.0 K0=48 ORDER=2 STAGES=2
 
 echo "delta_fix_verify on $(hostname)"
 echo "start: $(date)"
