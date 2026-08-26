@@ -73,24 +73,35 @@ cof(N) = trotter_error_coefficients(N).coeffs
 # =============================================================================
 # PART 0 -- is the oracle converged? MPS ceiling is 4^min, not 16^min.
 # =============================================================================
+# NOTE: this is a function, not a bare top-level loop. In Julia, assigning to a
+# variable inside a top-level `for` creates a NEW LOCAL rather than updating the
+# global of the same name ("soft scope"), so `prev = Nd` here would be invisible
+# on the next iteration and reading `prev` would throw UndefVarError. A function
+# body uses hard scope and behaves as intended.
+function oracle_scan(mds)
+    N_ceiling = nothing
+    prev = nothing
+    for md in mds
+        md < 2 && continue
+        Nd = validate_N_against_direct(n, J, gammas, t, ks, k_ref, lsites, rho0;
+                                       cutoff=ct, maxdim=md, order=order,
+                                       order_ref=order, dissipation=true)
+        c = cof(Nd)
+        d = prev === nothing ? NaN : maximum(abs.(c .- cof(prev)))
+        @printf("  maxdim=%4d  c1=%+.10f  N11=%.8e  N12=%.8e  dc vs prev=%.2e\n",
+                md, c[1], Nd[1,1], Nd[1,2], d)
+        prev = Nd
+        md >= chi_mps && (N_ceiling = Nd)
+        flush(stdout)
+    end
+    N_ceiling === nothing && error("oracle_scan produced no run at or above the MPS ceiling")
+    return N_ceiling
+end
+
 println("="^76)
 println("PART 0 : oracle self-convergence (MPS ceiling is $chi_mps, NOT $chi)")
 println("="^76)
-N_orc = nothing
-prev = nothing
-for md in unique([chi_mps ÷ 2, chi_mps, 2 * chi_mps, chi])
-    md < 2 && continue
-    Nd = validate_N_against_direct(n, J, gammas, t, ks, k_ref, lsites, rho0;
-                                   cutoff=ct, maxdim=md, order=order,
-                                   order_ref=order, dissipation=true)
-    c = cof(Nd)
-    d = prev === nothing ? NaN : maximum(abs.(c .- cof(prev)))
-    @printf("  maxdim=%4d  c1=%+.10f  N11=%.8e  N12=%.8e  dc vs prev=%.2e\n",
-            md, c[1], Nd[1,1], Nd[1,2], d)
-    prev = Nd
-    md >= chi_mps && (N_orc = Nd)
-    flush(stdout)
-end
+N_orc = oracle_scan(unique([chi_mps ÷ 2, chi_mps, 2 * chi_mps, chi]))
 println("  -> if these agree from maxdim=$chi_mps up, the oracle is EXACT and is")
 println("     the correct ground truth. It is also far cheaper than either route.\n")
 c_orc = cof(N_orc)
@@ -149,18 +160,26 @@ println("and maxdim_G=256 gave 1.0e-4. The uploaded cmp_coefficients.csv reports
 println("9.36e-4 at maxdim=256, which is the maxdim_G=128 number.\n")
 rows = ["maxdim,maxdim_G,c1,dc_vs_oracle,dc_vs_lagrange,N11,N12,N22,lambda_min"]
 @printf("  %8s %14s %14s %14s\n", "maxdim_G", "c1", "dc vs oracle", "dc vs Lagrange")
-for mg in filter(<=(chi), [16, 32, 64, 128, 192, 256])
-    r = test_dmpf_open_N(n, J, gammas, t, ks, k0, lsites, rho0;
-                         cutoff=ct, maxdim=chi, maxdim_G=mg, order=order,
-                         order_ref=order, dissipation=true, exact_delta=true)
-    d_o = maximum(abs.(r.coeffs .- c_orc))
-    d_l = maximum(abs.(r.coeffs .- mr.c_lagrange))
-    @printf("  %8d %+14.10f %14.3e %14.3e\n", mg, r.coeffs[1], d_o, d_l)
-    push!(rows, @sprintf("%d,%d,%.10f,%.8e,%.8e,%.8e,%.8e,%.8e,%.8e",
-                         chi, mg, r.coeffs[1], d_o, d_l,
-                         r.N[1,1], r.N[1,2], r.N[2,2], minimum(r.eigvals)))
-    flush(stdout)
+
+function maxdim_G_scan!(rows, mgs)
+    for mg in mgs
+        r = test_dmpf_open_N(n, J, gammas, t, ks, k0, lsites, rho0;
+                             cutoff=ct, maxdim=chi, maxdim_G=mg, order=order,
+                             order_ref=order, dissipation=true, exact_delta=true)
+        d_o = maximum(abs.(r.coeffs .- c_orc))
+        d_l = maximum(abs.(r.coeffs .- mr.c_lagrange))
+        @printf("  %8d %+14.10f %14.3e %14.3e\n", mg, r.coeffs[1], d_o, d_l)
+        push!(rows, @sprintf("%d,%d,%.10f,%.8e,%.8e,%.8e,%.8e,%.8e,%.8e",
+                             chi, mg, r.coeffs[1], d_o, d_l,
+                             r.N[1,1], r.N[1,2], r.N[2,2], minimum(r.eigvals)))
+        # Flush to disk after EVERY point: this loop is the long pole (~6 runs at
+        # the ceiling) and a wall-clock timeout should not cost the whole sweep.
+        write("floor_diagnostic.csv", join(rows, "\n") * "\n")
+        flush(stdout)
+    end
 end
+
+maxdim_G_scan!(rows, filter(<=(chi), [16, 32, 64, 128, 192, 256]))
 
 # reference rows so the CSV is self-contained
 push!(rows, @sprintf("%d,%d,%.10f,%.8e,%.8e,%.8e,%.8e,%.8e,%.8e",
