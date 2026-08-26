@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --time=10:00:00
+#SBATCH --time=23:00:00
 #SBATCH --output=logs/cmpv2_%j.out
 #SBATCH --error=logs/cmpv2_%j.err
 
@@ -30,7 +30,7 @@ module load Julia/1.11.6-linux-x86_64
 export JULIA_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
-export N_QUBITS=4 GAMMA=0.05 TVAL=3.0 K0=48 K_REF=48 ORDER=2 GSCAN=0
+export N_QUBITS=4 GAMMA=0.05 TVAL=3.0 K0=48 K_REF=48 ORDER=2 GSCAN=1
 
 echo "comparison_study_v2 on $(hostname)"
 echo "start: $(date)"
