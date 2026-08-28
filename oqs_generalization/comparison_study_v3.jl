@@ -34,6 +34,8 @@
 # Environment: N_QUBITS, GAMMA, TVAL, K0, K_REF, ORDER, TAG, GSCAN
 #   GSCAN=1 additionally sweeps maxdim_G at each maxdim -> cmp_gscan.csv
 #   MAXCHI  caps the MPO grid (default min(ceiling, 256))
+#   CUTOFF        SVD cutoff for the MPO routes (default 1e-14)
+#   CUTOFF_ORACLE SVD cutoff for the oracle only (default = CUTOFF)
 #   GRID    explicit comma-separated grid, e.g. GRID=64,128,256,384,512
 # =============================================================================
 
@@ -54,7 +56,14 @@ order = parse(Int,     getenv("ORDER",    2))
 tag   = getenv("TAG", "")
 gscan = getenv("GSCAN", "0") == "1"
 ks    = [3, 8]
-ct    = 1e-14
+ct    = parse(Float64, getenv("CUTOFF", 1e-14))          # for the MPO routes
+# The ORACLE gets its own cutoff. At n=6 job 6995914 showed the oracle drifting
+# 4.7e-4 between maxdim 64 and 128, which is impossible as a bond-dimension
+# effect (the MPS ceiling is 4^3 = 64, so 128 cannot add states). The suspect is
+# cutoff: delta_j = rho_kj - rho_ref is a small difference of two O(1) states, so
+# a cutoff relative to the large intermediate is far too loose for the small
+# result. The oracle is CHEAP, so it can afford a tighter cutoff than the routes.
+ct_orc = parse(Float64, getenv("CUTOFF_ORACLE", ct))
 
 @assert k_ref == k0 "k_ref must equal k0, else the routes target different references"
 
@@ -78,6 +87,7 @@ sfx     = isempty(tag) ? "" : "_" * tag
         n, gamma, t, string(ks), k0, k_ref, order)
 @printf("MPO ceiling = %d    MPS ceiling (oracle) = %d\n", chi, chi_mps)
 @printf("grid = %s   (capped at %d)\n", string(grid), chi_ref)
+@printf("cutoff: routes = %.1e   oracle = %.1e\n", ct, ct_orc)
 if chi_ref < chi
     println("""
   *** THE MPO CEILING IS NOT REACHED. Every point below is TRUNCATED. ***
@@ -127,7 +137,7 @@ println("="^76); println("GROUND TRUTH: direct state-overlap oracle"); println("
 
 function oracle_at(md)
     validate_N_against_direct(n, J, gammas, t, ks, k_ref, lsites, rho0;
-                              cutoff=ct, maxdim=md, order=order,
+                              cutoff=ct_orc, maxdim=md, order=order,
                               order_ref=order, dissipation=true)
 end
 

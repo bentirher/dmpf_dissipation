@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=180G
-#SBATCH --time=16:00:00
+#SBATCH --time=20:00:00
 #SBATCH --output=logs/n6_%j.out
 #SBATCH --error=logs/n6_%j.err
 
@@ -31,10 +31,13 @@
 # 6 Liouville sites rather than 4. If it OOMs, drop to MAXCHI=128 rather than
 # cutting memory further.
 #
-# TIME. n=4 at maxdim=256 cost ~940 s for the N-route. Cost is roughly linear in
-# the number of sites at fixed chi, so expect ~1.5x, i.e. ~40 min for the top
-# point and ~1.5 h for the sweep. 16 h is deliberate margin: the chi-scaling
-# exponent was fitted at n=4 (t_N ~ chi^1.88) and may be worse here.
+# TIME. Measured at n=6 in job 6995914: t_N = 256, 752, 2178, 7091, 20617 s for
+# chi = 48, 64, 96, 128, 192, plus t_M = 108, 255, 615, 1859, 5029. Summing the
+# GRID below gives 12.2 h including the v1-reference m_route(192) run. Hence
+# 20 h, not 12: the n=4 repeat showed ~40% node-to-node variation, which would
+# put this at ~17 h on a slow node. (My earlier 16 h estimate assumed
+# t_N ~ chi^1.88 from n=4; the real n=6 exponent is 3.08, which is why chi=256
+# overran.)
 #
 # ONE CHANGE AT A TIME: K0 stays at 48 so this is directly comparable to the n=4
 # data. The k0=192 test is a SEPARATE job at n=4 -- see submit_k0.sh.
@@ -45,7 +48,22 @@ export JULIA_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 export N_QUBITS=6 GAMMA=0.05 TVAL=3.0 K0=48 K_REF=48 ORDER=2
-export MAXCHI=256 GSCAN=0 TAG=n6
+export GSCAN=0 TAG=n6
+
+# GRID overrides the default [16,32,48,64,96,128,192,256] entirely.
+#   chi=16 and 32 gave dc = 2.9e-1 and 3.5e-2 against a signal of 2.3e-2, i.e.
+#     both lose to the free formula. No information, ~2 min. Dropped.
+#   chi=256 alone needs ~13.6 h by the fitted t_N ~ chi^3.08. That is what killed
+#     job 6995914 at the 16 h limit. Dropped.
+#   chi=48 is where chi_break sat, so the grid is centred there.
+export GRID=48,64,96,128,192
+
+# CUTOFF_ORACLE: the oracle drifted 4.7e-4 between maxdim 64 and 128 in job
+# 6995914, which cannot be a bond-dimension effect (MPS ceiling is 4^3 = 64).
+# SET THIS FROM THE oracle_convergence.jl TABLE before trusting the run. 0.0
+# disables cutoff-based truncation for the oracle and leaves maxdim in charge;
+# the oracle is cheap enough to afford it. The routes keep CUTOFF=1e-14.
+export CUTOFF_ORACLE=0.0
 
 echo "n=6 comparison on $(hostname)"
 echo "start: $(date)"
