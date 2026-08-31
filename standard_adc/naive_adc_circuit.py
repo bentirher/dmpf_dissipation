@@ -18,6 +18,7 @@ from qiskit import QuantumCircuit, QuantumRegister
 from qiskit.circuit import Parameter
 import numpy as np
 from qiskit.quantum_info import SparsePauliOp
+from qiskit_ibm_runtime import EstimatorV2
 
 def naive_circuit(
     J,
@@ -30,12 +31,9 @@ def naive_circuit(
 
     system_qubits = QuantumRegister(n, "q")
     ancillas = QuantumRegister(n, "a")
-    num_qubits = 2*n
 
     qc = QuantumCircuit(system_qubits, ancillas)
     t = Parameter("t")
-
-    k = 20
 
     [qc.x(system_qubits[int(i)]) for i in excited]
 
@@ -74,3 +72,26 @@ def sigma_minus(q, num_qubits):
 
 def population(q, num_qubits):
     return sigma_plus(q, num_qubits)@sigma_minus(q, num_qubits)
+
+def solve_qc(
+    n: int,
+    qc: QuantumCircuit,
+    tlist: Sequence[float],
+    backend,
+    ):
+
+    num_qubits = qc.num_qubits
+    observables = [ population(i, num_qubits) for i in range(n) ]
+
+    estimator = EstimatorV2(mode = backend)
+
+    pubs = [(qc, x, tlist) for x in observables]
+    job = estimator.run(pubs)
+    pubs_result = job.result()
+
+    evs = { str(i) : None for i in range(n) }
+    for i in range(n):
+        evs[str(i)] = pubs_result[i].data.evs
+
+    return evs
+    
