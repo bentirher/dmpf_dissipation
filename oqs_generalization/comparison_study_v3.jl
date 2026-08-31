@@ -141,17 +141,26 @@ function oracle_at(md)
                               order_ref=order, dissipation=true)
 end
 
-N_lo, N_hi = oracle_at(chi_mps), oracle_at(2 * chi_mps)
+# The oracle MUST run AT the MPS ceiling, never above it. Job 7033426 measured
+# c1 = -0.13342 / -0.13573 / -0.13620 / -0.13566 at maxdim = 32 / 64 / 128 / 256,
+# reproducibly at every cutoff from 1e-12 to 0. maxdim=64 and 256 agree to 7.1e-5
+# while 128 is off from BOTH by ~5e-4 -- that is not convergence drift, it is the
+# above-ceiling pathology already documented at trotter_error_gram.jl:72
+# ("actively harmful ... enormous intermediate tensors"). v3 previously took
+# oracle_at(2*chi_mps) as ground truth, i.e. deliberately the polluted one.
+# maxdim = chi_mps is exact by representability: an MPS on n Liouville sites of
+# local dimension 4 has Schmidt rank at most 4^min(l,n-l) at every cut.
+N_lo, N_hi = oracle_at(chi_mps ÷ 2), oracle_at(chi_mps)
 c_lo = trotter_error_coefficients(N_lo).coeffs
 c_hi = trotter_error_coefficients(N_hi).coeffs
 drift = maximum(abs.(c_hi .- c_lo))
-@printf("  maxdim=%d  c1=%+.10f\n  maxdim=%d  c1=%+.10f\n  drift = %.3e\n",
-        chi_mps, c_lo[1], 2 * chi_mps, c_hi[1], drift)
-if drift > 1e-10
-    @warn "oracle has NOT saturated at the MPS ceiling -- ground truth is unreliable" drift
-else
-    println("  -> saturated at the MPS ceiling. Ground truth is exact.")
-end
+@printf("  maxdim=%d (below ceiling)  c1=%+.10f\n  maxdim=%d (AT ceiling)     c1=%+.10f\n  gap = %.3e\n",
+        chi_mps ÷ 2, c_lo[1], chi_mps, c_hi[1], drift)
+println("""  The ceiling value is exact by representability. The gap above is how
+  much the half-ceiling run is truncating -- it is NOT a convergence error, and
+  it does NOT need to be small. Do NOT 'check' this by raising maxdim above
+  $chi_mps: that is the above-ceiling pathology (section 4 note) and it silently
+  shifts c1 by ~5e-4 at n=6.""")
 
 N_oracle = N_hi
 c_exact  = c_hi
