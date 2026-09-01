@@ -10,7 +10,21 @@ using LinearAlgebra, Printf
 #   vectorized_initial_state_mps                                  (F_diagnostics.jl)
 # Do NOT add a second include of any of those files -- see the note at the top
 # of trotter_error_gram.jl about include ordering in this codebase.
-include("F_diagnostics.jl")
+#
+# Julia resolves a relative `include` against the directory of the file doing
+# the including, NOT the process working directory. So this file must live
+# alongside F_diagnostics.jl. Checked explicitly, because the failure mode
+# otherwise is a bare SystemError at load time that is easy to miss in a batch
+# log -- and which leaves an empty output directory behind if the submit script
+# already created one.
+let dep = joinpath(@__DIR__, "F_diagnostics.jl")
+    isfile(dep) || error(
+        "vectorized_evolution.jl cannot find F_diagnostics.jl.\n" *
+        "  Looked in: $(@__DIR__)\n" *
+        "  Copy vectorized_evolution.jl and entanglement_growth_study.jl into the\n" *
+        "  directory that contains F_diagnostics.jl, or symlink the project files here.")
+end
+include(joinpath(@__DIR__, "F_diagnostics.jl"))
 
 # =============================================================================
 # vectorized_evolution.jl
@@ -261,7 +275,9 @@ function bond_report(psi::MPS, tols::Vector{Float64})
         chi_req_mid   = [c[mid] for c in chis],
         chi_req_max   = [maximum(c) for c in chis],
         S_profile     = S1,
+        S_half_profile = Shalf,
         linkdim_profile = linkd,
+        chi_profiles  = chis,
     )
 end
 
@@ -385,14 +401,20 @@ function evolve_vectorized(
     rec_purity     = Float64[]
     rec_zmid       = ComplexF64[]
     rec_saturated  = Bool[]
-    profiles       = Vector{Vector{Float64}}()
+    # Full per-bond profiles, kept so the "is the middle cut actually the
+    # bottleneck?" question can be answered from the saved data rather than
+    # re-run. Cheap: (n-1) floats per snapshot.
+    prof_S         = Vector{Vector{Float64}}()
+    prof_Shalf     = Vector{Vector{Float64}}()
+    prof_ld        = Vector{Vector{Int}}()
+    prof_chi       = Vector{Vector{Vector{Int}}}()   # [snapshot][tol][bond]
 
     function snapshot!(tnow)
         tr = liouville_trace(rho, id_mps)
         pur = liouville_purity(rho)
         zj = track_observable ? inner(z_mps, rho) : ComplexF64(NaN)
         if renormalize_trace && abs(tr) > 1e-14
-            rho[1] ./= tr
+            rho[1] = rho[1] / tr
             pur /= abs2(tr)
             zj  /= tr
         end
@@ -409,7 +431,10 @@ function evolve_vectorized(
         # Saturated: the loosest tolerance already demands every stored Schmidt
         # value, so the true requirement is >= this and we cannot see how much.
         push!(rec_saturated, r.chi_req_max[1] >= r.linkdim_max && r.linkdim_max >= maxdim)
-        push!(profiles, r.S_profile)
+        push!(prof_S, r.S_profile)
+        push!(prof_Shalf, r.S_half_profile)
+        push!(prof_ld, r.linkdim_profile)
+        push!(prof_chi, r.chi_profiles)
         return r
     end
 
@@ -472,7 +497,9 @@ function evolve_vectorized(
         linkdim_mid = rec_ld_mid, linkdim_max = rec_ld_max,
         chi_req_mid = rec_chi_mid, chi_req_max = rec_chi_max,
         trace = rec_trace, purity = rec_purity, z_mid = rec_zmid,
-        saturated = rec_saturated, S_profile = profiles,
+        saturated = rec_saturated,
+        S_profile = prof_S, S_half_profile = prof_Shalf,
+        linkdim_profile = prof_ld, chi_profile = prof_chi,
     )
 end
 
@@ -516,28 +543,55 @@ end
 # CSV output
 # =============================================================================
 
-function rows_to_csv(res; label::String="")
-    tolnames = [@sprintf("chi_req_mid_%.0e", tol) for tol in res.tols]
-    tolnames_mx = [@sprintf("chi_req_max_%.0e", tol) for tol in res.tols]
-    header = join(vcat(
-        ["label", "n", "gamma", "Jmean", "dissipation", "order", "maxdim", "t",
-         "S_op_mid", "S_op_max", "S_half_mid", "linkdim_mid", "linkdim_max"],
-        tolnames, tolnames_mx,
-        ["trace_re", "purity", "z_mid_re", "ceiling_mid", "saturated"]), ",")
-    lines = [header]
+#
+# Three tables, all long-format and all carrying their own run parameters in
+# every row, so files from different jobs can simply be concatenated (drop the
+# repeated header) without a separate metadata lookup:
+#
+#   rows_to_csv        one row per (run, time)         -- the main result
+#   profile_to_csv     one row per (run, time, bond)   -- is the middle cut the
+#                                                         bottleneck?
+#   convergence_to_csv one row per (maxdim, time)      -- is any of it converged?
+#
+# `saturated` is carried in the main table on purpose: filter on it before
+# plotting chi_req, or you will be plotting your own maxdim back at yourself.
+
+"Column values shared by every table, so each file is self-describing."
+function _run_meta(res, label::String)
     gmean = sum(res.gammas) / length(res.gammas)
     jmean = sum(res.J) / length(res.J)
+    return [label, string(res.n), @sprintf("%.6f", gmean), @sprintf("%.6f", jmean),
+            string(res.dissipation), string(res.order), string(res.maxdim),
+            @sprintf("%.3e", res.cutoff), @sprintf("%.5f", res.dt)]
+end
+
+const _META_HEADER = ["label", "n", "gamma", "Jmean", "dissipation",
+                      "order", "maxdim", "cutoff", "dt"]
+
+"""
+    rows_to_csv(res; label)
+
+Main time series: one row per recorded time.
+"""
+function rows_to_csv(res; label::String="", header::Bool=true)
+    tolnames    = [@sprintf("chi_req_mid_%.0e", tol) for tol in res.tols]
+    tolnames_mx = [@sprintf("chi_req_max_%.0e", tol) for tol in res.tols]
+    hdr = join(vcat(_META_HEADER,
+        ["t", "S_op_mid", "S_op_max", "S_half_mid", "linkdim_mid", "linkdim_max"],
+        tolnames, tolnames_mx,
+        ["trace_re", "trace_im", "purity", "z_mid_re", "ceiling_mid", "saturated"]), ",")
+    lines = header ? [hdr] : String[]
+    meta = _run_meta(res, label)
     for i in eachindex(res.t)
-        fields = vcat(
-            [label, string(res.n), @sprintf("%.6f", gmean), @sprintf("%.6f", jmean),
-             string(res.dissipation), string(res.order), string(res.maxdim),
-             @sprintf("%.6f", res.t[i]),
+        fields = vcat(meta,
+            [@sprintf("%.6f", res.t[i]),
              @sprintf("%.10f", res.S_op_mid[i]), @sprintf("%.10f", res.S_op_max[i]),
              @sprintf("%.10f", res.S_half_mid[i]),
              string(res.linkdim_mid[i]), string(res.linkdim_max[i])],
             [string(c[i]) for c in res.chi_req_mid],
             [string(c[i]) for c in res.chi_req_max],
-            [@sprintf("%.10f", real(res.trace[i])), @sprintf("%.10f", res.purity[i]),
+            [@sprintf("%.10f", real(res.trace[i])), @sprintf("%.3e", imag(res.trace[i])),
+             @sprintf("%.10f", res.purity[i]),
              @sprintf("%.10f", real(res.z_mid[i])),
              string(res.ceiling_mid), string(res.saturated[i])])
         push!(lines, join(fields, ","))
@@ -545,4 +599,88 @@ function rows_to_csv(res; label::String="")
     return join(lines, "\n") * "\n"
 end
 
+"""
+    profile_to_csv(res; label)
+
+Per-bond profile: one row per (time, bond). Use this to confirm that the middle
+cut really is the worst cut -- with site-dependent gammas, or a disorder
+realization that happens to be weak near the centre, it is not, and the
+middle-cut numbers in the main table would then understate the cost.
+"""
+function profile_to_csv(res; label::String="", header::Bool=true)
+    tolnames = [@sprintf("chi_req_%.0e", tol) for tol in res.tols]
+    hdr = join(vcat(_META_HEADER,
+        ["t", "bond", "S_op_bond", "S_half_bond", "linkdim_bond"],
+        tolnames, ["ceiling_bond"]), ",")
+    lines = header ? [hdr] : String[]
+    meta = _run_meta(res, label)
+    n = res.n
+    for i in eachindex(res.t), b in 1:(n-1)
+        fields = vcat(meta,
+            [@sprintf("%.6f", res.t[i]), string(b),
+             @sprintf("%.10f", res.S_profile[i][b]),
+             @sprintf("%.10f", res.S_half_profile[i][b]),
+             string(res.linkdim_profile[i][b])],
+            [string(res.chi_profile[i][ti][b]) for ti in eachindex(res.tols)],
+            [string(state_bond_dim_ceiling(n, b))])
+        push!(lines, join(fields, ","))
+    end
+    return join(lines, "\n") * "\n"
+end
+
+"""
+    convergence_to_csv(conv; label_prefix)
+
+Flattens the output of `maxdim_convergence` into one row per (maxdim, time),
+including the deviation of S_op and <Z_mid> from the largest-maxdim run. The
+column `converged_1e3` marks rows whose S_op agrees with the reference to
+better than 1e-3 bits -- a crude but explicit criterion, so that "which points
+am I allowed to quote?" is answered in the data file rather than by eye.
+"""
+function convergence_to_csv(conv; label_prefix::String="conv", header::Bool=true)
+    ref = conv.runs[end]
+    hdr = join(vcat(_META_HEADER,
+        ["t", "S_op_mid", "S_op_mid_ref", "dS_op", "z_mid_re", "dz_mid",
+         "chi_req_mid_loose", "saturated", "converged_1e3"]), ",")
+    lines = header ? [hdr] : String[]
+    for (r, md) in zip(conv.runs, conv.maxdims)
+        meta = _run_meta(r, "$(label_prefix)_chi$(md)")
+        for i in eachindex(r.t)
+            dS = abs(r.S_op_mid[i] - ref.S_op_mid[i])
+            dz = abs(real(r.z_mid[i]) - real(ref.z_mid[i]))
+            fields = vcat(meta,
+                [@sprintf("%.6f", r.t[i]),
+                 @sprintf("%.10f", r.S_op_mid[i]),
+                 @sprintf("%.10f", ref.S_op_mid[i]),
+                 @sprintf("%.6e", dS),
+                 @sprintf("%.10f", real(r.z_mid[i])),
+                 @sprintf("%.6e", dz),
+                 string(r.chi_req_mid[1][i]),
+                 string(r.saturated[i]),
+                 string(dS < 1e-3)])
+            push!(lines, join(fields, ","))
+        end
+    end
+    return join(lines, "\n") * "\n"
+end
+
 write_csv(path::String, res; label::String="") = write(path, rows_to_csv(res; label=label))
+write_profile_csv(path::String, res; label::String="") = write(path, profile_to_csv(res; label=label))
+write_convergence_csv(path::String, conv; label_prefix::String="conv") =
+    write(path, convergence_to_csv(conv; label_prefix=label_prefix))
+
+"""
+    save_run(res; dir=".", label="run")
+
+Convenience: writes `<dir>/<label>_timeseries.csv` and `<dir>/<label>_profile.csv`
+for a single `evolve_vectorized` result. Returns the two paths.
+"""
+function save_run(res; dir::String=".", label::String="run")
+    mkpath(dir)
+    p1 = joinpath(dir, "$(label)_timeseries.csv")
+    p2 = joinpath(dir, "$(label)_profile.csv")
+    write_csv(p1, res; label=label)
+    write_profile_csv(p2, res; label=label)
+    @printf("wrote %s and %s\n", p1, p2)
+    return (timeseries=p1, profile=p2)
+end

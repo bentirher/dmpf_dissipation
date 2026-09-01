@@ -30,12 +30,29 @@
 # Environment: N_LIST, GAMMA, TMAX, NT, DT, ORDER, MAXDIM, CUTOFF, JCOUP,
 #              DISORDER, SEED, TAG
 # =============================================================================
-using LinearAlgebra, Printf
+using LinearAlgebra, Printf, Dates
 import Random, Distributions
-include("vectorized_evolution.jl")
-BLAS.set_num_threads(parse(Int, get(ENV, "SLURM_CPUS_PER_TASK", "1")))
 
 getenv(k, d) = get(ENV, k, string(d))
+
+# --- breadcrumbs, written BEFORE the heavy include -------------------------
+# The output directory and a manifest are created first so that the contents of
+# the directory identify how far the job got:
+#   directory absent          -> the bash script never ran (module load, path)
+#   directory empty           -> Julia died at load time (missing include, ITensors)
+#   manifest.csv only         -> Julia loaded but the first evolution failed
+#   manifest + *_timeseries   -> some runs finished; check which n are present
+# Previously an empty directory was ambiguous between the first two, because the
+# bash `mkdir -p` and Julia's `mkpath` both create it.
+outdir = getenv("OUTDIR", "results")
+mkpath(outdir)
+
+println("[stage] outdir=$(abspath(outdir))"); flush(stdout)
+println("[stage] loading vectorized_evolution.jl ..."); flush(stdout)
+include(joinpath(@__DIR__, "vectorized_evolution.jl"))
+println("[stage] load OK"); flush(stdout)
+
+BLAS.set_num_threads(parse(Int, get(ENV, "SLURM_CPUS_PER_TASK", "1")))
 n_list   = parse.(Int, split(getenv("N_LIST", "8,12,16,20"), ","))
 gamma    = parse(Float64, getenv("GAMMA",  0.05))
 tmax     = parse(Float64, getenv("TMAX",   40.0))
@@ -63,53 +80,126 @@ times = collect(range(tmax / nt, tmax; length=nt))
         order, maxdim, cutoff, disorder ? "U[1/4,3/4] (seed $seed)" : @sprintf("%.3f uniform", jcoup))
 flush(stdout)
 
-all_rows = String[]
-header_written = false
+outdir = outdir   # already created and announced above
 
-for n in n_list
-    J = if disorder
-        Random.seed!(seed)
-        rand(Distributions.Uniform(1/4, 3/4), n - 1)
-    else
-        jcoup
-    end
-
-    for (diss, name) in ((true, "open"), (false, "closed"))
-        @printf("\n--- n=%d  %s ---\n", n, name)
-        flush(stdout)
-        res = evolve_vectorized(n, J, gamma, times;
-                                dissipation = diss,
-                                dt = dt, order = order,
-                                cutoff = cutoff, maxdim = maxdim,
-                                initial = :neel,
-                                tols = [1e-6, 1e-10],
-                                verbose = true)
-        csv = rows_to_csv(res; label = "$(name)_n$(n)")
-        lines = split(chomp(csv), "\n")
-        if !header_written
-            push!(all_rows, lines[1]); header_written = true
-        end
-        append!(all_rows, lines[2:end])
+# Manifest: every parameter of this job, written before any physics runs, so
+# the directory is never ambiguously empty again.
+manifest = joinpath(outdir, "manifest.csv")
+open(manifest, "w") do io
+    println(io, "key,value")
+    for (k, v) in [("n_list", join(n_list, " ")), ("gamma", gamma), ("tmax", tmax),
+                   ("nt", nt), ("dt", dt), ("order", order), ("maxdim", maxdim),
+                   ("cutoff", cutoff), ("jcoup", jcoup), ("disorder", disorder),
+                   ("seed", seed), ("tag", tag), ("host", gethostname()),
+                   ("started", Dates.now()), ("cwd", pwd())]
+        println(io, "$k,$v")
     end
 end
-
-outfile = "entanglement_growth_g$(gtag)$(sfx).csv"
-write(outfile, join(all_rows, "\n") * "\n")
-@printf("\nwrote %s (%d rows)\n", outfile, length(all_rows) - 1)
+println("[stage] wrote $manifest"); flush(stdout)
 
 # -----------------------------------------------------------------------------
-# Convergence check on the largest n, at the barrier peak. Do not skip this.
+# Everything below runs inside a function ON PURPOSE.
+#
+# In a Julia SCRIPT (as opposed to the REPL), assigning to an existing global
+# from inside a top-level `for` loop does NOT touch the global: the assignment
+# creates a new local, and reading it before that assignment raises
+# `UndefVarError: ... not defined in local scope`. That is exactly the failure
+# that killed the first version of this file. Wrapping the sweep in a function
+# removes the soft-scope rule entirely -- `first_run` is now an ordinary local,
+# and every future accumulator added here is safe by construction.
+#
+# It is also faster: top-level globals are type-unstable, so any loop written at
+# top level in Julia pays a dispatch cost on every iteration.
 # -----------------------------------------------------------------------------
-if get(ENV, "SKIP_CONVERGENCE", "false") != "true"
+
+function run_sweep(; n_list, gamma, times, dt, order, maxdim, cutoff,
+                     jcoup, disorder, seed, outdir, gtag, sfx)
+    all_rows  = String[]   # one row per (run, time)
+    prof_rows = String[]   # one row per (run, time, bond)
+    first_run = true
+
+    # Reseeded per call so the disorder realization for a given n is
+    # reproducible and the n=8 couplings are a prefix of the n=20 ones.
+    function coupling(n)
+        disorder || return jcoup
+        Random.seed!(seed)
+        return rand(Distributions.Uniform(1/4, 3/4), n - 1)
+    end
+
+    for n in n_list
+        J = coupling(n)
+        for (diss, name) in ((true, "open"), (false, "closed"))
+            @printf("\n--- n=%d  %s ---\n", n, name); flush(stdout)
+            res = evolve_vectorized(n, J, gamma, times;
+                                    dissipation = diss,
+                                    dt = dt, order = order,
+                                    cutoff = cutoff, maxdim = maxdim,
+                                    initial = :neel,
+                                    tols = [1e-6, 1e-10],
+                                    verbose = true)
+            lbl = "$(name)_n$(n)"
+            # Header on the first run only; later runs append bare rows.
+            append!(all_rows,  split(chomp(rows_to_csv(res;    label=lbl, header=first_run)), "\n"))
+            append!(prof_rows, split(chomp(profile_to_csv(res; label=lbl, header=first_run)), "\n"))
+            first_run = false
+
+            # Per-run files written immediately, so a job that dies at n=20 still
+            # leaves usable n=8,12,16 data behind rather than nothing.
+            save_run(res; dir=outdir, label="g$(gtag)$(sfx)_$(lbl)")
+        end
+    end
+
+    ts_file   = joinpath(outdir, "entanglement_growth_g$(gtag)$(sfx).csv")
+    prof_file = joinpath(outdir, "entanglement_growth_g$(gtag)$(sfx)_profile.csv")
+    write(ts_file,   join(all_rows,  "\n") * "\n")
+    write(prof_file, join(prof_rows, "\n") * "\n")
+    @printf("\nwrote %s (%d data rows)\n", ts_file,   length(all_rows)  - 1)
+    @printf("wrote %s (%d data rows)\n",   prof_file, length(prof_rows) - 1)
+    return (timeseries=ts_file, profile=prof_file, coupling=coupling)
+end
+
+# -----------------------------------------------------------------------------
+# Convergence check on the largest n, around the barrier peak. Do not skip this:
+# a chi_req curve from an unconverged run is a picture of your own maxdim.
+# -----------------------------------------------------------------------------
+function run_convergence(; n_list, gamma, times, tmax, dt, order, maxdim, cutoff,
+                           coupling, outdir, gtag, sfx)
     n_big = maximum(n_list)
     peak_window = filter(t -> t <= min(tmax, 1.5 / max(gamma, 1e-9)), times)
     isempty(peak_window) && (peak_window = times)
-    check_times = peak_window[max(1, length(peak_window) ÷ 4):max(1, length(peak_window) ÷ 4):end]
+    stride = max(1, length(peak_window) ÷ 4)
+    check_times = collect(peak_window[stride:stride:end])
+    isempty(check_times) && (check_times = [times[end]])
+
     ladder = filter(<=(maxdim), [64, 128, 256, 512, 1024])
-    length(ladder) < 2 && (ladder = [maxdim ÷ 2, maxdim])
+    length(ladder) < 2 && (ladder = [max(8, maxdim ÷ 2), maxdim])
+
     println("\n=== maxdim convergence, n=$n_big ===")
-    maxdim_convergence(n_big, disorder ? rand(Distributions.Uniform(1/4,3/4), n_big-1) : jcoup,
-                       gamma, collect(check_times), ladder;
-                       dt=dt, order=order, cutoff=cutoff, initial=:neel,
-                       tols=[1e-6, 1e-10], verbose=true)
+    conv = maxdim_convergence(n_big, coupling(n_big), gamma, check_times, ladder;
+                              dt=dt, order=order, cutoff=cutoff, initial=:neel,
+                              tols=[1e-6, 1e-10], verbose=true)
+
+    conv_file = joinpath(outdir, "entanglement_growth_g$(gtag)$(sfx)_convergence.csv")
+    write_convergence_csv(conv_file, conv; label_prefix="conv_n$(n_big)")
+    @printf("wrote %s\n", conv_file)
+
+    lo, hi = conv.runs[1], conv.runs[end]
+    nconv = count(i -> abs(lo.S_op_mid[i] - hi.S_op_mid[i]) < 1e-3, eachindex(lo.t))
+    @printf("  (%d/%d times already converged at the SMALLEST maxdim=%d)\n",
+            nconv, length(lo.t), ladder[1])
+    return conv_file
 end
+
+# -----------------------------------------------------------------------------
+
+sweep = run_sweep(; n_list=n_list, gamma=gamma, times=times, dt=dt, order=order,
+                    maxdim=maxdim, cutoff=cutoff, jcoup=jcoup, disorder=disorder,
+                    seed=seed, outdir=outdir, gtag=gtag, sfx=sfx)
+
+if get(ENV, "SKIP_CONVERGENCE", "false") != "true"
+    run_convergence(; n_list=n_list, gamma=gamma, times=times, tmax=tmax, dt=dt,
+                      order=order, maxdim=maxdim, cutoff=cutoff,
+                      coupling=sweep.coupling, outdir=outdir, gtag=gtag, sfx=sfx)
+end
+
+println("\n[stage] done"); flush(stdout)

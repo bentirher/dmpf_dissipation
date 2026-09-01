@@ -41,8 +41,31 @@ mkdir -p "$OUTDIR"
 
 echo "entanglement_growth GAMMA=$GAMMA N_LIST=$N_LIST OUTDIR=$OUTDIR on $(hostname)"
 echo "start: $(date)"
+echo "cwd: $(pwd)"
+# Sanity: the new files must sit next to the project's F_diagnostics.jl, because
+# Julia resolves `include` relative to the including file's directory.
+for f in vectorized_evolution.jl entanglement_growth_study.jl F_diagnostics.jl; do
+  [ -f "$f" ] || { echo "FATAL: $f not found in $(pwd)" >&2; exit 2; }
+done
+
 julia entanglement_growth_study.jl
+JULIA_STATUS=$?
 echo "end: $(date)"
 
 echo "--- CSVs written ---"
 ls -la "$OUTDIR"
+NCSV=$(find "$OUTDIR" -name '*.csv' | wc -l)
+echo "csv count: $NCSV"
+
+# Exit on Julia's status, NOT on ls's. Without this the job is reported
+# COMPLETED even when Julia died on its first line, because the last command in
+# the script was a successful `ls` on an empty directory.
+if [ "$JULIA_STATUS" -ne 0 ]; then
+  echo "FATAL: julia exited $JULIA_STATUS -- see the .err log" >&2
+  exit "$JULIA_STATUS"
+fi
+if [ "$NCSV" -eq 0 ]; then
+  echo "FATAL: julia exited 0 but wrote no CSVs" >&2
+  exit 3
+fi
+exit 0
