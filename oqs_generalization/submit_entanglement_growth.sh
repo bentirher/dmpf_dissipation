@@ -32,7 +32,17 @@ esac
 export N_LIST=8,12,16,20
 export DT=0.02 ORDER=2 CUTOFF=1e-12 JCOUP=0.5 DISORDER=false
 
-echo "entanglement_growth GAMMA=$GAMMA N_LIST=$N_LIST on $(hostname)"
+# One directory per gamma. Every CSV row carries its own n/gamma/maxdim/cutoff/dt,
+# so the combined files across tasks can be concatenated afterwards with
+#   head -1 results_g0p050/entanglement_growth_*.csv > all_timeseries.csv
+#   tail -q -n +2 results_g*/entanglement_growth_g*.csv >> all_timeseries.csv
+export OUTDIR=results_g$(echo $GAMMA | tr '.' 'p')
+mkdir -p "$OUTDIR"
+
+echo "entanglement_growth GAMMA=$GAMMA N_LIST=$N_LIST OUTDIR=$OUTDIR on $(hostname)"
 echo "start: $(date)"
 julia entanglement_growth_study.jl
 echo "end: $(date)"
+
+echo "--- CSVs written ---"
+ls -la "$OUTDIR"
