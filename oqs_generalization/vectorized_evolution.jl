@@ -428,9 +428,15 @@ function evolve_vectorized(
             push!(rec_chi_max[i], r.chi_req_max[i])
         end
         push!(rec_trace, tr); push!(rec_purity, pur); push!(rec_zmid, zj)
-        # Saturated: the loosest tolerance already demands every stored Schmidt
-        # value, so the true requirement is >= this and we cannot see how much.
-        push!(rec_saturated, r.chi_req_max[1] >= r.linkdim_max && r.linkdim_max >= maxdim)
+        # Truncation flag. The old criterion (chi_req >= linkdim AND linkdim >=
+        # maxdim) was too permissive: at gamma=0.2, n=20 it read chi_req = 248
+        # against maxdim = 256 and reported "not saturated", yet the same
+        # quantity measured at maxdim 64/128/256 came out as 64/125/241. It was
+        # tracking maxdim, not converging. The honest criterion is simply
+        # whether maxdim binds anywhere: if it does, the requested `cutoff` was
+        # never enforced, truncation noise is accumulating, and chi_req is a
+        # censored lower bound rather than a measurement.
+        push!(rec_saturated, r.linkdim_max >= maxdim)
         push!(prof_S, r.S_profile)
         push!(prof_Shalf, r.S_half_profile)
         push!(prof_ld, r.linkdim_profile)
@@ -514,9 +520,16 @@ end
 Repeats `evolve_vectorized` over a ladder of maxdim values and reports, at each
 time, the change in S_op and in <Z_mid> relative to the largest maxdim.
 
-This is the step that separates a scaling study from a plot of the truncation
-you happened to impose. Anything you intend to publish as "the bond dimension
-required at time t" has to come from a run where this has flattened.
+THE LADDER MUST EXTEND ABOVE THE PRODUCTION maxdim. The first round of runs
+used a ladder that topped out AT the production value, which made "converged at
+256" a tautology: the reference and the run being tested were the same
+calculation. `run_convergence` in the driver now always appends 2x the
+production maxdim for this reason.
+
+Note that the two quantities converge at very different rates. In the first
+round S_op was already converged to 1e-4 at maxdim = 64, while chi_req at the
+same times went 64 -> 127 -> 249 as maxdim doubled. Expect to certify S_op
+cheaply and chi_req not at all.
 """
 function maxdim_convergence(n, J, gamma, times::Vector{Float64},
                             maxdims::Vector{Int}; verbose::Bool=true, kwargs...)
@@ -534,8 +547,42 @@ function maxdim_convergence(n, J, gamma, times::Vector{Float64},
                     join([@sprintf("%8.4f", r.S_op_mid[i+1]) for r in runs], " "),
                     maximum(ds))
         end
+        println("\n chi_req(1e-6) at the middle cut, same runs:")
+        for (i, t) in enumerate(times)
+            @printf("%7.3f | %s\n", t,
+                    join([@sprintf("%8d", r.chi_req_mid[1][i+1]) for r in runs], " "))
+        end
+        println(" If this row tracks the maxdim ladder, chi_req is censored, not measured.")
     end
     return (maxdims=maxdims, runs=runs)
+end
+
+"""
+    dt_convergence(n, J, gamma, times, dts; kwargs...)
+
+Trotter-step convergence at fixed maxdim. The first round used dt = 0.02
+throughout, which is very conservative for a second-order splitting and was a
+large part of why the small-gamma jobs never finished. Run this once to find
+the largest dt that leaves S_op and <Z> unchanged, then use it everywhere.
+"""
+function dt_convergence(n, J, gamma, times::Vector{Float64},
+                        dts::Vector{Float64}; verbose::Bool=true, kwargs...)
+    runs = [evolve_vectorized(n, J, gamma, times; dt=d, verbose=false, kwargs...)
+            for d in dts]
+    ref = runs[argmin(dts)]
+    if verbose
+        @printf("\nTrotter convergence (reference dt=%.4g, n=%d)\n", minimum(dts), n)
+        println("      t | " * join([@sprintf("%9s", "dt=$d") for d in dts], " ") *
+                "  |  max |dS_op|   max |dz|")
+        for (i, t) in enumerate(times)
+            ds = [abs(r.S_op_mid[i+1] - ref.S_op_mid[i+1]) for r in runs]
+            dz = [abs(real(r.z_mid[i+1]) - real(ref.z_mid[i+1])) for r in runs]
+            @printf("%7.3f | %s  |  %.2e    %.2e\n", t,
+                    join([@sprintf("%9.4f", r.S_op_mid[i+1]) for r in runs], " "),
+                    maximum(ds), maximum(dz))
+        end
+    end
+    return (dts=dts, runs=runs)
 end
 
 

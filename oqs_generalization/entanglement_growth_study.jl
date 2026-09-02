@@ -1,205 +1,247 @@
 # =============================================================================
-# entanglement_growth_study.jl
+# entanglement_growth_study.jl  (round 2)
 #
-# Locates the classically expensive corner of (n, gamma, t) for the vectorized
-# MPS/TEBD simulation of the Heisenberg + amplitude damping chain, so that the
-# quantum-circuit experiment (Hamiltonian + ancilla-mediated amplitude damping)
-# can be sited somewhere defensible.
+# Locates the classically expensive corner of (n, gamma, t) for vectorized
+# MPS/TEBD, to motivate the parameters of the ancilla-based circuit experiment.
 #
-# For each (n, gamma) it evolves |rho(t)>> and records S_op(t) and the bond
-# dimension actually required. Each gamma also gets a gamma=0 closed-system
-# control run at the same n, so the "does dissipation help or hurt" claim is
-# made against a like-for-like baseline rather than against intuition.
+# -----------------------------------------------------------------------------
+# WHAT ROUND 1 TAUGHT US, AND WHAT CHANGED HERE
+# -----------------------------------------------------------------------------
 #
-# WHAT THE OUTPUT SHOULD LOOK LIKE, AND WHAT IT MEANS
+# 1. THE TIME WINDOW SCALED WITH THE WRONG VARIABLE.
+#    Round 1 set TMAX ~ 2/gamma on the assumption that the operator-entanglement
+#    barrier peaks at t ~ 1/gamma. It does not. Measured peaks were at
+#    t = 2.5, 4, 5, 4 for gamma = 0.2, 0.1, 0.05, 0.01 against 1/gamma =
+#    5, 10, 20, 100. For small gamma the peak is where the CLOSED system
+#    saturates, i.e. t_peak ~ n/2, and is set by system size, not by gamma.
+#    Consequence: the gamma=0.01 job ran to t=200 to capture a peak at t=4 and
+#    spent ~95% of its walltime on a flat tail, which is why the small-gamma
+#    ladders never reached large n.
+#    FIX: times are built per n as TMAX = TMAX_FACTOR * n (default 1.5), which
+#    brackets the peak plus the beginning of the decay.
 #
-# Amplitude damping alone (sigma^- only, no absorption) has the trivial product
-# steady state |0...0>, so S_op must return to zero at long times. The curve is
-# a barrier: rise, peak, fall. The peak sits near t ~ 1/gamma and gets TALLER as
-# gamma gets SMALLER. So:
+# 2. THE CLOSED BASELINE WAS UNPHYSICAL AT n >= 12.
+#    Propagating a pure state as a density matrix at maxdim=256 gave purity
+#    Tr(rho^2) = 1.69 (n=12), 4.19 (n=16), 24.2 (n=20). Purity is identically 1
+#    for a pure state, so those runs were garbage past t ~ 2.5.
+#    FIX: closed runs go through evolve_closed (closed_evolution.jl), which
+#    propagates |psi> at local dimension 2 and reconstructs the operator-space
+#    quantities EXACTLY from the pure-state Schmidt spectrum. Purity cannot be
+#    violated, and energy conservation gives a sharp truncation flag.
 #
-#   - the hard regime is small gamma at t ~ 1/gamma, not long times;
-#   - "evolve longer and it gets harder" is false for this model;
-#   - the circuit experiment should be sited AT the peak, which is the only
-#     place the classical baseline is genuinely strained.
+# 3. maxdim BOUND EVERYWHERE, SO cutoff WAS NEVER ENFORCED.
+#    Every n >= 12 run had linkdim pinned at maxdim. chi_req then tracked maxdim
+#    (64 -> 127 -> 249 as maxdim went 64 -> 128 -> 256) instead of converging.
+#    FIX: `saturated` now fires whenever maxdim binds at all, and the ladder
+#    always extends ABOVE the production maxdim -- round 1's ladder topped out
+#    AT it, which made "converged at 256" a tautology.
 #
-# If instead chi_req stays flat while S_op falls, that is the Vilchez-Estevez
-# effect and is the more interesting result of the two -- it is the separation
-# between "the state is simple" and "getting there was not".
+# 4. S_op AND chi_req CONVERGE AT COMPLETELY DIFFERENT RATES.
+#    S_op was converged to 1e-4 already at maxdim = 64; chi_req was not
+#    converged at 256. Chasing both on one expensive grid spends the budget on
+#    the cheap quantity.
+#    FIX: three modes.
+#      MODE=scaling  cheap maxdim, wide (n, gamma) grid -> S_op(n,gamma,t) and
+#                    the area-law onset n_sat(gamma). This is the physics.
+#      MODE=ladder   one (n, gamma), maxdim ladder up to 2x production, a few
+#                    times near the peak -> the chi_req question, answered as
+#                    "converged to X" or honestly as "> X".
+#      MODE=dt       Trotter-step check. Round 1 used dt=0.02 everywhere without
+#                    ever testing whether 0.05 or 0.1 would do.
 #
-# Environment: N_LIST, GAMMA, TMAX, NT, DT, ORDER, MAXDIM, CUTOFF, JCOUP,
-#              DISORDER, SEED, TAG
+# Environment: MODE, N_LIST, GAMMA_LIST, TMAX_FACTOR, NT, DT, ORDER, MAXDIM,
+#              CUTOFF, JCOUP, DISORDER, SEED, TAG, OUTDIR, SKIP_CLOSED
 # =============================================================================
 using LinearAlgebra, Printf, Dates
 import Random, Distributions
 
 getenv(k, d) = get(ENV, k, string(d))
 
-# --- breadcrumbs, written BEFORE the heavy include -------------------------
-# The output directory and a manifest are created first so that the contents of
-# the directory identify how far the job got:
-#   directory absent          -> the bash script never ran (module load, path)
-#   directory empty           -> Julia died at load time (missing include, ITensors)
-#   manifest.csv only         -> Julia loaded but the first evolution failed
-#   manifest + *_timeseries   -> some runs finished; check which n are present
-# Previously an empty directory was ambiguous between the first two, because the
-# bash `mkdir -p` and Julia's `mkpath` both create it.
 outdir = getenv("OUTDIR", "results")
 mkpath(outdir)
-
 println("[stage] outdir=$(abspath(outdir))"); flush(stdout)
-println("[stage] loading vectorized_evolution.jl ..."); flush(stdout)
+println("[stage] loading ..."); flush(stdout)
 include(joinpath(@__DIR__, "vectorized_evolution.jl"))
+include(joinpath(@__DIR__, "closed_evolution.jl"))
 println("[stage] load OK"); flush(stdout)
 
 BLAS.set_num_threads(parse(Int, get(ENV, "SLURM_CPUS_PER_TASK", "1")))
-n_list   = parse.(Int, split(getenv("N_LIST", "8,12,16,20"), ","))
-gamma    = parse(Float64, getenv("GAMMA",  0.05))
-tmax     = parse(Float64, getenv("TMAX",   40.0))
-nt       = parse(Int,     getenv("NT",     40))
-dt       = parse(Float64, getenv("DT",     0.02))
-order    = parse(Int,     getenv("ORDER",  2))
-maxdim   = parse(Int,     getenv("MAXDIM", 512))
-cutoff   = parse(Float64, getenv("CUTOFF", 1e-12))
-jcoup    = parse(Float64, getenv("JCOUP",  0.5))
-disorder = parse(Bool,    getenv("DISORDER", false))
-seed     = parse(Int,     getenv("SEED",   1234))
-tag      = getenv("TAG", "")
-sfx      = isempty(tag) ? "" : "_" * tag
-gtag     = replace(@sprintf("%.3f", gamma), "." => "p")
 
-# Time grid. tmax defaults to ~2/gamma so the barrier peak is inside the window
-# rather than just off the right-hand edge -- the mistake that makes every such
-# plot look like monotone growth.
-times = collect(range(tmax / nt, tmax; length=nt))
+mode        = getenv("MODE", "scaling")
+n_list      = parse.(Int, split(getenv("N_LIST", "8,12,16,20,24"), ","))
+gamma_list  = parse.(Float64, split(getenv("GAMMA_LIST", "0.02,0.05,0.10"), ","))
+tmax_factor = parse(Float64, getenv("TMAX_FACTOR", 1.5))
+nt          = parse(Int,     getenv("NT",     30))
+dt          = parse(Float64, getenv("DT",     0.05))
+order       = parse(Int,     getenv("ORDER",  2))
+maxdim      = parse(Int,     getenv("MAXDIM", 256))
+cutoff      = parse(Float64, getenv("CUTOFF", 1e-12))
+jcoup       = parse(Float64, getenv("JCOUP",  0.5))
+disorder    = parse(Bool,    getenv("DISORDER", false))
+seed        = parse(Int,     getenv("SEED",   1234))
+skip_closed = parse(Bool,    getenv("SKIP_CLOSED", false))
+tag         = getenv("TAG", "")
+sfx         = isempty(tag) ? "" : "_" * tag
 
-@printf("=== entanglement growth study ===\n")
-@printf("n_list=%s gamma=%.4f tmax=%.2f (1/gamma=%.2f) nt=%d dt=%.4g\n",
-        string(n_list), gamma, tmax, gamma > 0 ? 1/gamma : Inf, nt, dt)
-@printf("order=%d maxdim=%d cutoff=%.1e J=%s\n\n",
-        order, maxdim, cutoff, disorder ? "U[1/4,3/4] (seed $seed)" : @sprintf("%.3f uniform", jcoup))
+# The peak sits near t ~ n/2, so the window is set by n, not by gamma.
+# TMAX_FACTOR=1.5 covers the peak and the start of the fall; raise it to ~3 only
+# if you specifically want the approach to the steady state.
+times_for(n) = collect(range(tmax_factor*n/nt, tmax_factor*n; length=nt))
+
+function coupling(n)
+    disorder || return jcoup
+    Random.seed!(seed)
+    return rand(Distributions.Uniform(1/4, 3/4), n - 1)
+end
+
+@printf("=== entanglement growth study, MODE=%s ===\n", mode)
+@printf("n_list=%s  gamma_list=%s\n", string(n_list), string(gamma_list))
+@printf("TMAX = %.2f * n  (n=%d -> t up to %.1f)  nt=%d  dt=%.4g\n",
+        tmax_factor, maximum(n_list), tmax_factor*maximum(n_list), nt, dt)
+@printf("order=%d maxdim=%d cutoff=%.1e J=%s\n\n", order, maxdim, cutoff,
+        disorder ? "U[1/4,3/4] (seed $seed)" : @sprintf("%.3f uniform", jcoup))
 flush(stdout)
 
-outdir = outdir   # already created and announced above
-
-# Manifest: every parameter of this job, written before any physics runs, so
-# the directory is never ambiguously empty again.
 manifest = joinpath(outdir, "manifest.csv")
 open(manifest, "w") do io
     println(io, "key,value")
-    for (k, v) in [("n_list", join(n_list, " ")), ("gamma", gamma), ("tmax", tmax),
-                   ("nt", nt), ("dt", dt), ("order", order), ("maxdim", maxdim),
-                   ("cutoff", cutoff), ("jcoup", jcoup), ("disorder", disorder),
-                   ("seed", seed), ("tag", tag), ("host", gethostname()),
-                   ("started", Dates.now()), ("cwd", pwd())]
+    for (k,v) in [("mode",mode), ("n_list",join(n_list," ")), ("gamma_list",join(gamma_list," ")),
+                  ("tmax_factor",tmax_factor), ("nt",nt), ("dt",dt), ("order",order),
+                  ("maxdim",maxdim), ("cutoff",cutoff), ("jcoup",jcoup),
+                  ("disorder",disorder), ("seed",seed), ("tag",tag),
+                  ("host",gethostname()), ("started",Dates.now()), ("cwd",pwd())]
         println(io, "$k,$v")
     end
 end
 println("[stage] wrote $manifest"); flush(stdout)
 
-# -----------------------------------------------------------------------------
-# Everything below runs inside a function ON PURPOSE.
-#
-# In a Julia SCRIPT (as opposed to the REPL), assigning to an existing global
-# from inside a top-level `for` loop does NOT touch the global: the assignment
-# creates a new local, and reading it before that assignment raises
-# `UndefVarError: ... not defined in local scope`. That is exactly the failure
-# that killed the first version of this file. Wrapping the sweep in a function
-# removes the soft-scope rule entirely -- `first_run` is now an ordinary local,
-# and every future accumulator added here is safe by construction.
-#
-# It is also faster: top-level globals are type-unstable, so any loop written at
-# top level in Julia pays a dispatch cost on every iteration.
-# -----------------------------------------------------------------------------
 
-function run_sweep(; n_list, gamma, times, dt, order, maxdim, cutoff,
-                     jcoup, disorder, seed, outdir, gtag, sfx)
-    all_rows  = String[]   # one row per (run, time)
-    prof_rows = String[]   # one row per (run, time, bond)
-    first_run = true
-
-    # Reseeded per call so the disorder realization for a given n is
-    # reproducible and the n=8 couplings are a prefix of the n=20 ones.
-    function coupling(n)
-        disorder || return jcoup
-        Random.seed!(seed)
-        return rand(Distributions.Uniform(1/4, 3/4), n - 1)
+# =============================================================================
+# MODE = scaling
+# =============================================================================
+function run_scaling()
+    all_rows = String[]; prof_rows = String[]; first = true
+    function collect!(res, lbl)
+        append!(all_rows,  split(chomp(rows_to_csv(res;    label=lbl, header=first)), "\n"))
+        append!(prof_rows, split(chomp(profile_to_csv(res; label=lbl, header=first)), "\n"))
+        first = false
+        save_run(res; dir=outdir, label="$(lbl)$(sfx)")
     end
 
     for n in n_list
-        J = coupling(n)
-        for (diss, name) in ((true, "open"), (false, "closed"))
-            @printf("\n--- n=%d  %s ---\n", n, name); flush(stdout)
-            res = evolve_vectorized(n, J, gamma, times;
-                                    dissipation = diss,
-                                    dt = dt, order = order,
-                                    cutoff = cutoff, maxdim = maxdim,
-                                    initial = :neel,
-                                    tols = [1e-6, 1e-10],
-                                    verbose = true)
-            lbl = "$(name)_n$(n)"
-            # Header on the first run only; later runs append bare rows.
-            append!(all_rows,  split(chomp(rows_to_csv(res;    label=lbl, header=first_run)), "\n"))
-            append!(prof_rows, split(chomp(profile_to_csv(res; label=lbl, header=first_run)), "\n"))
-            first_run = false
+        J = coupling(n); ts = times_for(n)
 
-            # Per-run files written immediately, so a job that dies at n=20 still
-            # leaves usable n=8,12,16 data behind rather than nothing.
-            save_run(res; dir=outdir, label="g$(gtag)$(sfx)_$(lbl)")
+        # Closed baseline once per n. It does not depend on gamma, and the
+        # pure-state route is cheap enough that there is no reason to recompute
+        # it inside the gamma loop the way round 1 did.
+        if !skip_closed
+            @printf("\n--- n=%d  CLOSED (pure-state route) ---\n", n); flush(stdout)
+            resc = evolve_closed(n, J, ts; dt=dt, order=order, cutoff=cutoff,
+                                 maxdim=maxdim, initial=:neel, tols=[1e-6,1e-10],
+                                 verbose=true)
+            collect!(resc, "closed_n$(n)")
+        end
+
+        for gm in gamma_list
+            gtag = replace(@sprintf("%.3f", gm), "." => "p")
+            @printf("\n--- n=%d  gamma=%.3f  OPEN ---\n", n, gm); flush(stdout)
+            res = evolve_vectorized(n, J, gm, ts; dissipation=true, dt=dt, order=order,
+                                    cutoff=cutoff, maxdim=maxdim, initial=:neel,
+                                    tols=[1e-6,1e-10], verbose=true)
+            collect!(res, "open_n$(n)_g$(gtag)")
         end
     end
 
-    ts_file   = joinpath(outdir, "entanglement_growth_g$(gtag)$(sfx).csv")
-    prof_file = joinpath(outdir, "entanglement_growth_g$(gtag)$(sfx)_profile.csv")
+    ts_file   = joinpath(outdir, "scaling$(sfx).csv")
+    prof_file = joinpath(outdir, "scaling$(sfx)_profile.csv")
     write(ts_file,   join(all_rows,  "\n") * "\n")
     write(prof_file, join(prof_rows, "\n") * "\n")
-    @printf("\nwrote %s (%d data rows)\n", ts_file,   length(all_rows)  - 1)
-    @printf("wrote %s (%d data rows)\n",   prof_file, length(prof_rows) - 1)
-    return (timeseries=ts_file, profile=prof_file, coupling=coupling)
+    @printf("\nwrote %s (%d rows)\nwrote %s (%d rows)\n",
+            ts_file, length(all_rows)-1, prof_file, length(prof_rows)-1)
 end
 
-# -----------------------------------------------------------------------------
-# Convergence check on the largest n, around the barrier peak. Do not skip this:
-# a chi_req curve from an unconverged run is a picture of your own maxdim.
-# -----------------------------------------------------------------------------
-function run_convergence(; n_list, gamma, times, tmax, dt, order, maxdim, cutoff,
-                           coupling, outdir, gtag, sfx)
-    n_big = maximum(n_list)
-    peak_window = filter(t -> t <= min(tmax, 1.5 / max(gamma, 1e-9)), times)
-    isempty(peak_window) && (peak_window = times)
-    stride = max(1, length(peak_window) ÷ 4)
-    check_times = collect(peak_window[stride:stride:end])
-    isempty(check_times) && (check_times = [times[end]])
 
-    ladder = filter(<=(maxdim), [64, 128, 256, 512, 1024])
-    length(ladder) < 2 && (ladder = [max(8, maxdim ÷ 2), maxdim])
+# =============================================================================
+# MODE = ladder
+# =============================================================================
+function run_ladder()
+    n  = n_list[1]
+    gm = gamma_list[1]
+    J  = coupling(n)
 
-    println("\n=== maxdim convergence, n=$n_big ===")
-    conv = maxdim_convergence(n_big, coupling(n_big), gamma, check_times, ladder;
+    # A handful of times bracketing the peak (t ~ n/2), not the whole window:
+    # the ladder costs one full run per rung and the answer lives at the peak.
+    tp = n/2
+    check_times = round.(sort(unique(filter(t -> t > 0,
+                        [0.5tp, 0.75tp, tp, 1.25tp, 1.75tp]))); digits=4)
+
+    # Always extend ABOVE the production maxdim, or the top rung is its own
+    # reference and every point trivially reports as converged.
+    ladder = sort(unique(vcat(filter(<=(maxdim), [64,128,256,512,1024]),
+                              [maxdim, 2*maxdim])))
+    @printf("\n=== maxdim ladder, n=%d gamma=%.3f ===\n", n, gm)
+    @printf("times: %s\nladder: %s (production=%d)\n\n",
+            string(check_times), string(ladder), maxdim); flush(stdout)
+
+    conv = maxdim_convergence(n, J, gm, check_times, ladder;
                               dt=dt, order=order, cutoff=cutoff, initial=:neel,
-                              tols=[1e-6, 1e-10], verbose=true)
+                              tols=[1e-6,1e-10], verbose=true)
 
-    conv_file = joinpath(outdir, "entanglement_growth_g$(gtag)$(sfx)_convergence.csv")
-    write_convergence_csv(conv_file, conv; label_prefix="conv_n$(n_big)")
-    @printf("wrote %s\n", conv_file)
+    gtag = replace(@sprintf("%.3f", gm), "." => "p")
+    f = joinpath(outdir, "ladder_n$(n)_g$(gtag)$(sfx).csv")
+    write_convergence_csv(f, conv; label_prefix="ladder_n$(n)_g$(gtag)")
+    @printf("wrote %s\n", f)
 
-    lo, hi = conv.runs[1], conv.runs[end]
-    nconv = count(i -> abs(lo.S_op_mid[i] - hi.S_op_mid[i]) < 1e-3, eachindex(lo.t))
-    @printf("  (%d/%d times already converged at the SMALLEST maxdim=%d)\n",
-            nconv, length(lo.t), ladder[1])
-    return conv_file
+    # Verdict, stated explicitly so it does not have to be eyeballed later.
+    lo, hi = conv.runs[end-1], conv.runs[end]
+    println("\n--- verdict at the top two rungs (maxdim $(ladder[end-1]) vs $(ladder[end])) ---")
+    for i in eachindex(hi.t)
+        dS = abs(lo.S_op_mid[i] - hi.S_op_mid[i])
+        c1, c2 = lo.chi_req_mid[1][i], hi.chi_req_mid[1][i]
+        ratio = c1 == 0 ? NaN : c2/c1
+        verdict = (dS < 1e-3 && ratio < 1.1) ? "CONVERGED" :
+                  (dS < 1e-3 ? "S_op ok, chi_req NOT converged (only chi >= $(c2))" :
+                               "NOT converged")
+        @printf("  t=%6.2f  S_op %.5f vs %.5f (dS=%.1e)  chi_req %4d -> %4d (x%.2f)  %s\n",
+                hi.t[i], lo.S_op_mid[i], hi.S_op_mid[i], dS, c1, c2, ratio, verdict)
+    end
 end
 
-# -----------------------------------------------------------------------------
 
-sweep = run_sweep(; n_list=n_list, gamma=gamma, times=times, dt=dt, order=order,
-                    maxdim=maxdim, cutoff=cutoff, jcoup=jcoup, disorder=disorder,
-                    seed=seed, outdir=outdir, gtag=gtag, sfx=sfx)
-
-if get(ENV, "SKIP_CONVERGENCE", "false") != "true"
-    run_convergence(; n_list=n_list, gamma=gamma, times=times, tmax=tmax, dt=dt,
-                      order=order, maxdim=maxdim, cutoff=cutoff,
-                      coupling=sweep.coupling, outdir=outdir, gtag=gtag, sfx=sfx)
+# =============================================================================
+# MODE = dt
+# =============================================================================
+function run_dtcheck()
+    n = n_list[1]; gm = gamma_list[1]; J = coupling(n)
+    tp = n/2
+    check_times = round.([0.5tp, tp, 1.5tp]; digits=4)
+    dts = [0.2, 0.1, 0.05, 0.02]
+    @printf("\n=== Trotter check, n=%d gamma=%.3f, maxdim=%d ===\n", n, gm, maxdim)
+    conv = dt_convergence(n, J, gm, check_times, dts;
+                          order=order, cutoff=cutoff, maxdim=maxdim,
+                          initial=:neel, tols=[1e-6,1e-10], verbose=true)
+    ref = conv.runs[argmin(dts)]
+    rows = ["label,n,gamma,dt,order,maxdim,t,S_op_mid,z_mid_re,dS_vs_finest,dz_vs_finest"]
+    for (r,d) in zip(conv.runs, dts), i in eachindex(r.t)
+        push!(rows, join(["dt$(d)", n, gm, d, order, maxdim,
+            @sprintf("%.4f", r.t[i]), @sprintf("%.10f", r.S_op_mid[i]),
+            @sprintf("%.10f", real(r.z_mid[i])),
+            @sprintf("%.4e", abs(r.S_op_mid[i]-ref.S_op_mid[i])),
+            @sprintf("%.4e", abs(real(r.z_mid[i])-real(ref.z_mid[i])))], ","))
+    end
+    f = joinpath(outdir, "dtcheck_n$(n)$(sfx).csv")
+    write(f, join(rows,"\n")*"\n"); @printf("wrote %s\n", f)
 end
 
+
+# =============================================================================
+if mode == "scaling"
+    run_scaling()
+elseif mode == "ladder"
+    run_ladder()
+elseif mode == "dt"
+    run_dtcheck()
+else
+    error("MODE must be one of: scaling, ladder, dt. Got '$mode'.")
+end
 println("\n[stage] done"); flush(stdout)
