@@ -144,7 +144,7 @@ def simulate_heisenberg(
     excited: Iterable,
     tlist: Sequence[float],
     dissipation: bool = True,
-    obs : str = "population",
+    obs : str = "populations",
     periodic: bool = False,
     excited_level: int = 0,
     options: dict | None = None,
@@ -188,7 +188,7 @@ def simulate_heisenberg(
     s = lowering_op(excited_level)
     sm = [_embed(s, i, n) for i in range(n)]      # sigma^-_i
     
-    if obs == "population":
+    if obs == "populations":
         e_ops = [o.dag() * o for o in sm]             # n_i = sigma^+_i sigma^-_i
     elif obs == "correlators":
         s = sigmaz()
