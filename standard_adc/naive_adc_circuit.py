@@ -53,7 +53,7 @@ def naive_circuit(
                 qc.ryy(alpha, q0, q1)
                 qc.rzz(2*alpha, q0, q1)
 
-        qc.barrier()
+        # qc.barrier()
 
         if dissipation:
             for j in range(n):
@@ -64,7 +64,7 @@ def naive_circuit(
 
             qc.reset(ancillas)
 
-            qc.barrier()
+            # qc.barrier()
 
     return qc
 
