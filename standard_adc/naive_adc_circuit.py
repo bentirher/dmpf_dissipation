@@ -108,7 +108,7 @@ def solve_qc(
     pubs_result = job.result()
 
     evs = { str(i) : None for i in range(len(observables)) }
-    for i in range(n-1):
+    for i in range(len(observables)):
         evs[str(i)] = pubs_result[i].data.evs
 
     return evs
