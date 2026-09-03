@@ -19,6 +19,8 @@ from matplotlib.lines import Line2D
 __all__ = [
     "heavy_hex_coordinates",
     "used_qubits",
+    "layout_qubits",
+    "select_qubits",
     "plot_layout",
     "plot_layouts",
 ]
@@ -197,6 +199,64 @@ def used_qubits(isa_circuit):
     return touched, edges
 
 
+def layout_qubits(isa_circuit, which="initial", coupling_map=None):
+    """Physical qubits assigned to the circuit's *logical* qubits by the transpiler.
+
+    Unlike :func:`used_qubits` this ignores what the circuit does and reads the
+    ``TranspileLayout``, so ancillas the router happened to swap through are not
+    included.
+
+    ``which="initial"`` gives the assignment chosen by the layout pass, before
+    routing. ``which="final"`` applies the routing permutation on top, i.e. where
+    each logical qubit sits at the end of the circuit.
+
+    Returns ``(qubits, edges)``. ``edges`` are the coupling-map connections whose
+    two endpoints are both in the selection — the induced sub-lattice, not the
+    connections that actually carry gates — and is empty when no coupling map is
+    given.
+    """
+    tl = getattr(isa_circuit, "layout", None)
+    if tl is None:
+        raise ValueError(
+            "circuit has no TranspileLayout; pass a circuit returned by the "
+            "pass manager, or use which='touched'"
+        )
+
+    try:
+        if which == "initial":
+            physical = tl.initial_index_layout(filter_ancillas=True)
+        elif which == "final":
+            physical = tl.final_index_layout(filter_ancillas=True)
+        else:
+            raise ValueError(f"unknown layout {which!r}, expected 'initial' or 'final'")
+    except AttributeError as exc:  # very old Qiskit
+        raise RuntimeError(
+            "this Qiskit is too old for TranspileLayout.initial_index_layout(); "
+            "upgrade qiskit or use which='touched'"
+        ) from exc
+
+    qubits = set(physical)
+
+    edges = set()
+    if coupling_map is not None:
+        edges = {
+            frozenset((a, b))
+            for a, b in coupling_map.get_edges()
+            if a in qubits and b in qubits
+        }
+    return qubits, edges
+
+
+def select_qubits(isa_circuit, which="touched", coupling_map=None):
+    """Dispatch to :func:`used_qubits` or :func:`layout_qubits`.
+
+    ``which`` is ``'touched'``, ``'initial'`` or ``'final'``.
+    """
+    if which == "touched":
+        return used_qubits(isa_circuit)
+    return layout_qubits(isa_circuit, which=which, coupling_map=coupling_map)
+
+
 def two_qubit_depth(circuit):
     """Circuit depth counting only genuine multi-qubit gates (barriers excluded)."""
     return circuit.depth(
@@ -240,6 +300,7 @@ def _draw(ax, coords, coupling_map, touched, edges, node_size, line_width):
 def plot_layout(
     isa_circuit,
     backend,
+    which="touched",
     ax=None,
     coordinates=None,
     node_size=110,
@@ -253,6 +314,12 @@ def plot_layout(
     isa_circuit : QuantumCircuit
         A transpiled circuit defined on the backend's physical qubits.
     backend : BackendV2 or CouplingMap
+    which : {'touched', 'initial', 'final'}
+        ``'touched'`` highlights every qubit the circuit operates on, including
+        ancillas the router swapped through, and only the connections carrying
+        two-qubit gates. ``'initial'`` and ``'final'`` highlight just the
+        physical qubits holding the logical ones, before and after routing, with
+        the induced sub-lattice connections between them.
     ax : matplotlib Axes, optional
         Draw here instead of creating a new figure.
     coordinates : dict, optional
@@ -266,7 +333,7 @@ def plot_layout(
     """
     coupling_map = _coupling_map(backend)
     coords = coordinates or heavy_hex_coordinates(backend)
-    touched, edges = used_qubits(isa_circuit)
+    touched, edges = select_qubits(isa_circuit, which=which, coupling_map=coupling_map)
 
     if ax is None:
         xs = [x for x, _ in coords.values()]
@@ -281,6 +348,7 @@ def plot_layout(
 def plot_layouts(
     isa_circuits,
     backend,
+    which="touched",
     ncols=4,
     titles=None,
     node_size=90,
@@ -290,6 +358,7 @@ def plot_layouts(
 ):
     """Plot several transpiled circuits on a grid of coupling maps.
 
+    ``which`` is passed to :func:`plot_layout` and applies to every panel.
     ``titles`` may be a list of strings (one per circuit) or ``None`` for none.
     Returns ``(fig, axes)`` with ``axes`` flattened and unused panels hidden.
     """
@@ -315,7 +384,7 @@ def plot_layouts(
 
     for ax, circuit in zip(axes, isa_circuits):
         plot_layout(
-            circuit, backend, ax=ax, coordinates=coords,
+            circuit, backend, which=which, ax=ax, coordinates=coords,
             node_size=node_size, line_width=line_width,
         )
     if titles is not None:
