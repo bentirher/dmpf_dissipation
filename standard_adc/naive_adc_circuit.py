@@ -6,10 +6,6 @@ Hardware-unaware (naive) version of the dissipative Heisenberg (XXZ) spin chain 
 with local amplitude damping
  
     L_i = sqrt(gamma_i) * sigma_i
- 
-and observables given by the single-qubit populations
- 
-    n_i = (sigma_i)^dag sigma_i = 0.5* <( I_i - Z_i )>
 """
 
 from typing import Iterable

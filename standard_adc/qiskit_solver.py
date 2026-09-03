@@ -10,6 +10,10 @@ with local amplitude damping
 and observables given by the single-qubit populations
  
     n_i = (sigma_i)^dag sigma_i = 0.5* <( I_i - Z_i )>
+
+or the two-qubit correlators 
+
+    <Z_iZ_j>
 """
 
 from typing import Sequence
