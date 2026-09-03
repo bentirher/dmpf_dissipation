@@ -1,0 +1,17 @@
+key,value
+mode,dt
+n_list,12
+gamma_list,0.05
+tmax_factor,1.5
+nt,30
+dt,0.05
+order,2
+maxdim,256
+cutoff,1.0e-12
+jcoup,0.5
+disorder,false
+seed,1234
+tag,dt
+host,hyperion-088
+started,2026-09-02T17:04:56.388
+cwd,/scratch/bentirher/bond_dim_study/oqs_generalization
