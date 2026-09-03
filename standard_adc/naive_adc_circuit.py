@@ -81,15 +81,25 @@ def sigma_minus(q, num_qubits):
 def population(q, num_qubits):
     return sigma_plus(q, num_qubits)@sigma_minus(q, num_qubits)
 
+def zz_correlator(q, num_qubits):
+    """Z_q Z_{q+1} two-qubit correlator."""
+    return SparsePauliOp.from_sparse_list(
+        [("ZZ", [q, q + 1], 1.0)], num_qubits=num_qubits)
+
 def solve_qc(
     n: int,
     qc: QuantumCircuit,
     tlist: Sequence[float],
+    obs: str,
     backend,
     ):
 
     num_qubits = qc.num_qubits
-    observables = [ population(i, num_qubits) for i in range(n) ]
+
+    if obs == "populations":
+        observables = [ population(i, num_qubits) for i in range(n) ]
+    elif obs == "correlators":
+        observables = [ zz_correlator(i, num_qubits) for i in range(n-1) ]
 
     estimator = EstimatorV2(mode = backend)
 
@@ -97,8 +107,12 @@ def solve_qc(
     job = estimator.run(pubs)
     pubs_result = job.result()
 
-    evs = { str(i) : None for i in range(n) }
-    for i in range(n):
+    # evs = { str(i) : None for i in range(n) }
+    # for i in range(n):
+    #     evs[str(i)] = pubs_result[i].data.evs
+
+    evs = { str(i) : None for i in range(n-1) }
+    for i in range(n-1):
         evs[str(i)] = pubs_result[i].data.evs
 
     return evs
