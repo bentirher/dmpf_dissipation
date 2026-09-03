@@ -38,12 +38,20 @@ def naive_circuit(
     [qc.x(system_qubits[int(i)]) for i in excited]
 
     for _ in range(k):
-        for i in range(n-1):
+        for i in range(0, n-1, 2):
             alpha = 2*J[i]*(t/k)
             q0, q1 = system_qubits[i], system_qubits[i+1]
             qc.rxx(alpha, q0, q1)
             qc.ryy(alpha, q0, q1)
             qc.rzz(2*alpha, q0, q1)
+
+        if n > 2:
+            for i in range(1, n-1, 2):
+                alpha = 2*J[i]*(t/k)
+                q0, q1 = system_qubits[i], system_qubits[i+1]
+                qc.rxx(alpha, q0, q1)
+                qc.ryy(alpha, q0, q1)
+                qc.rzz(2*alpha, q0, q1)
 
         qc.barrier()
 
