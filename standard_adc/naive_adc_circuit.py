@@ -107,11 +107,7 @@ def solve_qc(
     job = estimator.run(pubs)
     pubs_result = job.result()
 
-    # evs = { str(i) : None for i in range(n) }
-    # for i in range(n):
-    #     evs[str(i)] = pubs_result[i].data.evs
-
-    evs = { str(i) : None for i in range(n-1) }
+    evs = { str(i) : None for i in range(len(observables)) }
     for i in range(n-1):
         evs[str(i)] = pubs_result[i].data.evs
 
