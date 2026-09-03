@@ -80,6 +80,7 @@ jcoup       = parse(Float64, getenv("JCOUP",  0.5))
 disorder    = parse(Bool,    getenv("DISORDER", false))
 seed        = parse(Int,     getenv("SEED",   1234))
 skip_closed = parse(Bool,    getenv("SKIP_CLOSED", false))
+splitting   = Symbol(getenv("SPLITTING", "project"))   # :project (codebase default) or :strang
 tag         = getenv("TAG", "")
 sfx         = isempty(tag) ? "" : "_" * tag
 
@@ -146,8 +147,8 @@ function run_scaling()
             gtag = replace(@sprintf("%.3f", gm), "." => "p")
             @printf("\n--- n=%d  gamma=%.3f  OPEN ---\n", n, gm); flush(stdout)
             res = evolve_vectorized(n, J, gm, ts; dissipation=true, dt=dt, order=order,
-                                    cutoff=cutoff, maxdim=maxdim, initial=:neel,
-                                    tols=[1e-6,1e-10], verbose=true)
+                                    splitting=splitting, cutoff=cutoff, maxdim=maxdim,
+                                    initial=:neel, tols=[1e-6,1e-10], verbose=true)
             collect!(res, "open_n$(n)_g$(gtag)")
         end
     end
@@ -172,20 +173,29 @@ function run_ladder()
     # A handful of times bracketing the peak (t ~ n/2), not the whole window:
     # the ladder costs one full run per rung and the answer lives at the peak.
     tp = n/2
+    # Was [0.5, 0.75, 1.0, 1.25, 1.75]*tp. The ladder costs one full run per
+    # rung and the run length is set by the LAST time, so the 1.75 point cost
+    # 40% of the job to sample the flat post-peak tail. Dropped.
     check_times = round.(sort(unique(filter(t -> t > 0,
-                        [0.5tp, 0.75tp, tp, 1.25tp, 1.75tp]))); digits=4)
+                        [0.5tp, 0.75tp, tp, 1.25tp]))); digits=4)
 
     # Always extend ABOVE the production maxdim, or the top rung is its own
     # reference and every point trivially reports as converged.
+    # Cap at the exact MPDO ceiling: beyond 4^(n/2) there is nothing left to
+    # resolve, so a higher rung is pure waste (at n=8 the ceiling is 256).
+    ceil_n = 4^min(n÷2, n - n÷2)
     ladder = sort(unique(vcat(filter(<=(maxdim), [64,128,256,512,1024]),
                               [maxdim, 2*maxdim])))
+    ladder = filter(<=(ceil_n), ladder)
+    isempty(ladder) && (ladder = [ceil_n])
+    length(ladder) < 2 && (ladder = sort(unique([max(8, ceil_n ÷ 4), ceil_n])))
     @printf("\n=== maxdim ladder, n=%d gamma=%.3f ===\n", n, gm)
     @printf("times: %s\nladder: %s (production=%d)\n\n",
             string(check_times), string(ladder), maxdim); flush(stdout)
 
     conv = maxdim_convergence(n, J, gm, check_times, ladder;
-                              dt=dt, order=order, cutoff=cutoff, initial=:neel,
-                              tols=[1e-6,1e-10], verbose=true)
+                              dt=dt, order=order, splitting=splitting, cutoff=cutoff,
+                              initial=:neel, tols=[1e-6,1e-10], verbose=true)
 
     gtag = replace(@sprintf("%.3f", gm), "." => "p")
     f = joinpath(outdir, "ladder_n$(n)_g$(gtag)$(sfx).csv")
@@ -218,7 +228,7 @@ function run_dtcheck()
     dts = [0.2, 0.1, 0.05, 0.02]
     @printf("\n=== Trotter check, n=%d gamma=%.3f, maxdim=%d ===\n", n, gm, maxdim)
     conv = dt_convergence(n, J, gm, check_times, dts;
-                          order=order, cutoff=cutoff, maxdim=maxdim,
+                          order=order, splitting=splitting, cutoff=cutoff, maxdim=maxdim,
                           initial=:neel, tols=[1e-6,1e-10], verbose=true)
     ref = conv.runs[argmin(dts)]
     rows = ["label,n,gamma,dt,order,maxdim,t,S_op_mid,z_mid_re,dS_vs_finest,dz_vs_finest"]
@@ -235,13 +245,74 @@ end
 
 
 # =============================================================================
+# MODE = order
+# =============================================================================
+#
+# Measures the actual Trotter order, cleanly. The n=12 dt check was ambiguous
+# because maxdim=256 was binding there, so truncation error was mixed into the
+# dt error. At n=8 the MPDO ceiling is 4^4 = 256, so maxdim=256 truncates
+# NOTHING and the only error left is the product formula. Whatever exponent
+# comes out of this run is the real one.
+#
+# Reports the fitted local exponent from successive error ratios:
+#   ratio ~ 2 => first order, ratio ~ 4 => second order, ~16 => fourth.
+# Runs both the project's composition and the symmetric one, so the comparison
+# is like-for-like at identical dt, times and truncation (none).
+function run_ordercheck()
+    n = n_list[1]; gm = gamma_list[1]; J = coupling(n)
+    ceil_n = 4^min(n÷2, n - n÷2)
+    if maxdim < ceil_n
+        @printf("WARNING: maxdim=%d is below the exact ceiling %d for n=%d.\n", maxdim, ceil_n, n)
+        println("         Truncation will contaminate the order measurement. Set MAXDIM=$ceil_n.")
+    end
+    tp = n/2
+    check_times = round.([0.5tp, tp, 1.5tp, 2.5tp]; digits=4)
+    dts = [0.2, 0.1, 0.05, 0.025]
+
+    rows = ["label,n,gamma,splitting,dt,order,maxdim,t,S_op_mid,z_mid_re,dS_vs_finest,dz_vs_finest"]
+    for spl in (:project, :strang)
+        @printf("\n=== order check: splitting=%s, n=%d gamma=%.3f, maxdim=%d (exact ceiling %d) ===\n",
+                spl, n, gm, maxdim, ceil_n); flush(stdout)
+        runs = [evolve_vectorized(n, J, gm, check_times; dt=d, order=2, splitting=spl,
+                                  cutoff=cutoff, maxdim=maxdim, initial=:neel,
+                                  tols=[1e-6,1e-10], verbose=false) for d in dts]
+        ref = runs[end]
+        println("      t | " * join([@sprintf("%10s", "dt=$d") for d in dts], "") *
+                " |  err ratios (2=1st order, 4=2nd)")
+        for i in eachindex(ref.t)
+            ref.t[i] == 0 && continue
+            e = [abs(r.S_op_mid[i] - ref.S_op_mid[i]) for r in runs]
+            rat = [e[k]/e[k+1] for k in 1:length(dts)-2 if e[k+1] > 0]
+            @printf("%7.3f |%s | %s\n", ref.t[i],
+                    join([@sprintf("%10.5f", r.S_op_mid[i]) for r in runs], ""),
+                    join([@sprintf("%.2f", x) for x in rat], "  "))
+        end
+        for (r,d) in zip(runs, dts), i in eachindex(r.t)
+            push!(rows, join([string(spl), n, gm, string(spl), d, 2, maxdim,
+                @sprintf("%.4f", r.t[i]), @sprintf("%.10f", r.S_op_mid[i]),
+                @sprintf("%.10f", real(r.z_mid[i])),
+                @sprintf("%.4e", abs(r.S_op_mid[i]-ref.S_op_mid[i])),
+                @sprintf("%.4e", abs(real(r.z_mid[i])-real(ref.z_mid[i])))], ","))
+        end
+    end
+    f = joinpath(outdir, "ordercheck_n$(n)$(sfx).csv")
+    write(f, join(rows,"\n")*"\n"); @printf("\nwrote %s\n", f)
+    println("\nIf :project gives ratios near 2 and :strang gives ratios near 4,")
+    println("then get_open_step_gates(...; order=2) is first order in the open case,")
+    println("and that finding matters well beyond this study.")
+end
+
+
+# =============================================================================
 if mode == "scaling"
     run_scaling()
 elseif mode == "ladder"
     run_ladder()
 elseif mode == "dt"
     run_dtcheck()
+elseif mode == "order"
+    run_ordercheck()
 else
-    error("MODE must be one of: scaling, ladder, dt. Got '$mode'.")
+    error("MODE must be one of: scaling, ladder, dt, order. Got '$mode'.")
 end
 println("\n[stage] done"); flush(stdout)
