@@ -51,6 +51,13 @@ def _embed(op: Qobj, i: int, n: int) -> Qobj:
     ops = [qeye(2)] * n
     ops[i] = op
     return tensor(ops)
+
+def _embed_correlator(op: Qobj, i: int, j: int, n: int) -> Qobj:
+    """n-qubit operator with `op` acting on site i, j, and identity elsewhere."""
+    ops = [qeye(2)] * n
+    ops[i] = op
+    ops[j]= op
+    return tensor(ops)
  
  
 def lowering_op(excited_level: int = 0) -> Qobj:
@@ -60,7 +67,6 @@ def lowering_op(excited_level: int = 0) -> Qobj:
     if excited_level == 1:
         return sigmap()          # (X + iY)/2 = |0><1| : basis(2,1) -> basis(2,0)
     raise ValueError("excited_level must be 0 or 1.")
- 
  
 def _n_bonds(n: int, periodic: bool) -> int:
     # a ring only makes sense for n > 2; for n == 2 it would double-count the bond
@@ -138,6 +144,7 @@ def simulate_heisenberg(
     excited: Iterable,
     tlist: Sequence[float],
     dissipation: bool = True,
+    obs : str = "population",
     periodic: bool = False,
     excited_level: int = 0,
     options: dict | None = None,
@@ -177,10 +184,15 @@ def simulate_heisenberg(
  
     H = build_hamiltonian(J, n, periodic=periodic)
     psi0 = build_initial_state(n, excited, excited_level=excited_level)
- 
+
     s = lowering_op(excited_level)
     sm = [_embed(s, i, n) for i in range(n)]      # sigma^-_i
-    e_ops = [o.dag() * o for o in sm]             # n_i = sigma^+_i sigma^-_i
+    
+    if obs == "population":
+        e_ops = [o.dag() * o for o in sm]             # n_i = sigma^+_i sigma^-_i
+    elif obs == "correlators":
+        s = sigmaz()
+        e_ops = [_embed_correlator(s, i, i+1, n) for i in range(n-1)]    # Z_iZ_{i+1}
  
     if dissipation:
         g = _broadcast(gamma, n, "gamma")
