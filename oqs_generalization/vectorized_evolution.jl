@@ -231,6 +231,82 @@ end
 
 
 # =============================================================================
+# Trotter splitting: the project's, and a symmetric alternative
+# =============================================================================
+#
+# `get_open_step_gates(...; order=2)` composes, in application order,
+#
+#     odd(dt/2) , even(dt) , diss(dt) , odd(dt/2)
+#
+# i.e. the operator  e^{A dt/2} e^{C dt} e^{B dt} e^{A dt/2}  with A = odd
+# Hamiltonian layer, B = even layer, C = dissipator layer. The outer A is
+# symmetrized, but B and C are composed as a bare first-order product, and
+#
+#     e^{C dt} e^{B dt} = exp( (B+C) dt + [C,B] dt^2/2 + ... )
+#
+# so the per-step error carries an uncancelled [C,B] dt^2 term and the scheme is
+# GLOBALLY FIRST ORDER whenever the dissipator and the even Hamiltonian layer
+# fail to commute -- which they do not, in general. When gamma = 0 we have
+# C = 0, the composition collapses to plain Strang, and it is genuinely second
+# order; that is why the closed-system case never showed this.
+#
+# The dt check at n=12, gamma=0.05 is consistent with exactly that: the error
+# ratio on halving dt was 3.3-3.6 at t=3 (looks second order, while the state is
+# still near-product and [C,B] is small) but 2.0-2.4 at t=6 and t=9 (first
+# order). It is not yet conclusive, because that run had maxdim=256 binding, so
+# truncation error is mixed in -- see MODE=order in the driver, which repeats
+# the measurement at n=8 where maxdim=256 is the exact ceiling and truncation is
+# identically zero.
+#
+# The symmetric alternative below splits B as well:
+#
+#     odd(dt/2) , even(dt/2) , diss(dt) , even(dt/2) , odd(dt/2)
+#
+# which is a genuine second-order symmetric composition for any number of terms.
+# It costs one extra two-site layer per step and should recover a factor-4 error
+# reduction per halving of dt.
+#
+# IMPORTANT: `:project` remains the default. This file does not silently change
+# the scheme underlying the rest of the codebase -- `get_open_step_gates` is
+# used throughout the MOC work, and if its order is really 1 rather than 2 that
+# has consequences well beyond this study (the order-4 Yoshida composition in
+# `get_open_step_gates_order4` is built from five order-2 sub-steps and is only
+# fourth order if the base really is second order). Establish the fact first
+# with MODE=order, then decide.
+
+"Symmetric (genuinely second-order) Strang splitting of odd / even / dissipator."
+function strang_open_step_gates(n, J, gammas, dt, lsites::LiouvilleSites;
+                                dissipation::Bool=true)
+    g = vcat(
+        odd_layer_channel_gates(n, J, dt/2, lsites),
+        even_layer_channel_gates(n, J, dt/2, lsites),
+    )
+    dissipation && append!(g, dissipator_layer_channel_gates(n, gammas, dt, lsites))
+    append!(g, even_layer_channel_gates(n, J, dt/2, lsites))
+    append!(g, odd_layer_channel_gates(n, J, dt/2, lsites))
+    return g
+end
+
+"""
+    step_gates(n, J, gammas, dt, lsites; order, dissipation, splitting)
+
+Dispatch between the project's composition (`:project`, the default, via
+`get_open_step_gates`) and the symmetric one above (`:strang`).
+"""
+function step_gates(n, J, gammas, dt, lsites::LiouvilleSites;
+                    order::Int=2, dissipation::Bool=true, splitting::Symbol=:project)
+    if splitting === :project
+        return get_open_step_gates(n, J, gammas, dt, lsites;
+                                   order=order, dissipation=dissipation)
+    elseif splitting === :strang
+        order == 2 || error("splitting=:strang is defined for order=2 only, got order=$order.")
+        return strang_open_step_gates(n, J, gammas, dt, lsites; dissipation=dissipation)
+    end
+    error("splitting must be :project or :strang, got $splitting.")
+end
+
+
+# =============================================================================
 # Per-snapshot diagnostics
 # =============================================================================
 
@@ -346,6 +422,7 @@ function evolve_vectorized(
     dissipation::Bool = true,
     dt::Float64 = 0.02,
     order::Int = 2,
+    splitting::Symbol = :project,
     cutoff::Float64 = 1e-12,
     maxdim::Int = 512,
     initial = :neel,
@@ -380,8 +457,8 @@ function evolve_vectorized(
 
     ceiling_mid = state_bond_dim_ceiling(n)
     if verbose
-        @printf("n=%d  order=%d  dissipation=%s  dt=%.4g  cutoff=%.1e  maxdim=%d\n",
-                n, order, dissipation, dt, cutoff, maxdim)
+        @printf("n=%d  order=%d  splitting=%s  dissipation=%s  dt=%.4g  cutoff=%.1e  maxdim=%d\n",
+                n, order, splitting, dissipation, dt, cutoff, maxdim)
         @printf("mean J=%.4f  mean gamma=%.4f  MPS ceiling at middle cut = %d (= 4^%d)\n",
                 sum(Jvec)/length(Jvec), sum(gammas)/n, ceiling_mid, min(n÷2, n-n÷2))
         maxdim >= ceiling_mid && println("  (maxdim is at or above the ceiling: this run is untruncated)")
@@ -462,8 +539,8 @@ function evolve_vectorized(
     function gates_for(step::Float64)
         key = round(step; digits=12)
         get!(gate_cache, key) do
-            get_open_step_gates(n, Jvec, gammas, key, lsites;
-                                order=order, dissipation=dissipation)
+            step_gates(n, Jvec, gammas, key, lsites;
+                       order=order, dissipation=dissipation, splitting=splitting)
         end
     end
 
@@ -496,7 +573,7 @@ function evolve_vectorized(
 
     return (
         n = n, J = Jvec, gammas = gammas, dissipation = dissipation,
-        order = order, dt = dt, cutoff = cutoff, maxdim = maxdim,
+        order = order, splitting = splitting, dt = dt, cutoff = cutoff, maxdim = maxdim,
         tols = tols, ceiling_mid = ceiling_mid,
         t = rec_t,
         S_op_mid = rec_S_mid, S_op_max = rec_S_max, S_half_mid = rec_Shalf_mid,
