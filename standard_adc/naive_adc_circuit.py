@@ -54,9 +54,9 @@ def naive_circuit(
                 qc.cry(theta, q, a)
                 qc.cx(a, q)
 
-            qc.barrier()
-
             qc.reset(ancillas)
+
+            qc.barrier()
 
     return qc
 
