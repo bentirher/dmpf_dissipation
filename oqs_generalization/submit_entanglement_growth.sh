@@ -1,9 +1,14 @@
 #!/bin/bash
 # Round 2, revised after the task-0 Trotter check.
 #
-#   sbatch --array=0   ...   # Trotter ORDER check at n=8 (EXACT). Run first.
-#   sbatch --array=1-3 ...   # scaling grid, one gamma per task
+#   sbatch --array=0   ...   # Trotter ORDER check at n=8 (EXACT). Already run.
+#   sbatch --array=1-3 ...   # scaling grid, one gamma per task  <- the deliverable
 #   sbatch --array=4-6 ...   # chi_req ladders
+#
+# GOAL: pick (n, gamma, t) for the hardware runs. Tasks 1-3 give S_op(n,gamma,t)
+# and the area-law onset n_sat(gamma), which is what decides whether a given
+# hardware point is classically reachable. Tasks 4-6 bound the bond dimension a
+# classical competitor would actually need at those points.
 #
 # WHY TASK 0 CHANGED. The n=12 dt check showed the S_op error falling by only
 # ~2x per halving of dt at t=6 and t=9 (3.3x at t=3), i.e. FIRST-order
@@ -45,12 +50,41 @@ export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
 # Revisit if task 0 shows the scheme is first order AND you switch to :strang.
 export DT=0.05 ORDER=2 CUTOFF=1e-12 JCOUP=0.5 DISORDER=false
 export TMAX_FACTOR=1.5 NT=30
-export SPLITTING=project   # set to 'strang' only after task 0 justifies it
+
+# SPLITTING=strang, decided by the n=8 exact order check (task 0, first run).
+# Effective order from successive differences, measured with truncation
+# identically zero:
+#     t          2     4     6    10
+#   :project    1.6   1.6   2.3   sign flip
+#   :strang     2.0   2.0   2.0   2.1
+# At t=4, :strang at dt=0.05 is more accurate than :project at dt=0.025 while
+# taking a quarter of the steps. :strang costs ~33% more per step (one extra
+# even layer), so it is a net ~2.6x at fixed accuracy, and it has a defensible
+# error bar because its order is actually the order it claims.
+export SPLITTING=strang
+
+# ---------------------------------------------------------------------------
+# DT AND THE HARDWARE RUN -- read this before quoting these numbers as the
+# classical baseline for a circuit experiment.
+#
+# DT=0.05 was chosen so the CLASSICAL integrator is converged: it approximates
+# the continuous-time Lindblad dynamics to <0.2% in S_op. That is the right
+# choice for "how entangled does the master equation get".
+#
+# It is NOT the right choice for "can a classical machine reproduce my circuit".
+# The hardware will run a Trotterized circuit at whatever step its gate budget
+# allows -- likely far coarser than 0.05. A coarse Trotterization is a DIFFERENT
+# map from the master equation, with its own entanglement growth, and it is that
+# map a classical competitor would have to match. Once the hardware Trotter step
+# is fixed, rerun tasks 1-3 with DT set to it and TMAX_FACTOR chosen so
+# TMAX = (number of Trotter steps) x DT.
+# ---------------------------------------------------------------------------
 
 case $SLURM_ARRAY_TASK_ID in
   # --- 0: Trotter ORDER at n=8, exact (ceiling 4^4 = 256). Cheap, decisive. --
-  0) export MODE=order   N_LIST=8 GAMMA_LIST=0.05 MAXDIM=256
+  0) export MODE=order   N_LIST=8 GAMMA_LIST=0.05 MAXDIM=256 ORDER=2
      export OUTDIR=r2_order TAG=ord ;;
+
 
   # --- 1-3: scaling grid. MAXDIM=256 is ample: S_op was converged at 64 in
   # round 1. chi_req from these is a lower bound only; the `saturated` column
