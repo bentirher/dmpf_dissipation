@@ -48,7 +48,7 @@ def ha_circuit(
         for i in range(0, n-1, 2):
             q1, q2 = system_qubits[i], system_qubits[i+1]
             qc.swap(q2, ancillas[counter])
-            counter =+ 1
+            counter = counter + 1
 
         qc.barrier()
 
@@ -60,7 +60,7 @@ def ha_circuit(
                 qc.rxx(alpha, q1, q2)
                 qc.ryy(alpha, q1, q2)
                 qc.rzz(2*alpha, q1, q2)
-                counter =+ 1
+                counter = counter + 1
 
         qc.barrier()
 
@@ -76,7 +76,7 @@ def ha_circuit(
                 qc.cry(theta2, q2, a)
                 qc.cx(a, q2)
                 qc.reset(a)
-                counter =+ 1
+                counter = counter + 1
 
             qc.barrier()
 
@@ -84,7 +84,7 @@ def ha_circuit(
             for j in range(0, n-1, 2):
                 q1, q2, a = system_qubits[j], ancillas[counter], system_qubits[j+1]
                 qc.swap(q2, a)
-                counter =+ 1
+                counter = counter + 1
 
             if n % 2 == 1:
                 theta  = 2*(((1 - (-gamma[-1]*t/k).exp())**(1/2)).arcsin())
