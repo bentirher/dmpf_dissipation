@@ -42,7 +42,7 @@ def ha_circuit(
             qc.ryy(alpha, q1, q2)
             qc.rzz(2*alpha, q1, q2)
 
-        qc.barrier()
+        #qc.barrier()
 
         counter = 0
         for i in range(0, n-1, 2):
@@ -50,7 +50,7 @@ def ha_circuit(
             qc.swap(q2, ancillas[counter])
             counter = counter + 1
 
-        qc.barrier()
+        #qc.barrier()
 
         if n > 2:
             counter = 0
@@ -62,7 +62,7 @@ def ha_circuit(
                 qc.rzz(2*alpha, q1, q2)
                 counter = counter + 1
 
-        qc.barrier()
+        #qc.barrier()
 
         if dissipation:
             counter = 0
@@ -78,7 +78,7 @@ def ha_circuit(
                 qc.reset(a)
                 counter = counter + 1
 
-            qc.barrier()
+            #qc.barrier()
 
             counter = 0
             for j in range(0, n-1, 2):
@@ -92,7 +92,7 @@ def ha_circuit(
                 qc.cx(ancillas[-1], system_qubits[-1])
                 qc.reset(ancillas[-1])
 
-            qc.barrier()
+            #qc.barrier()
 
     init_layout = chain_init_layout(n, backend, system_qubits, ancillas)           
     return qc, init_layout
