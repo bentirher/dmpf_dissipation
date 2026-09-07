@@ -4,6 +4,7 @@
 #   sbatch --array=0   submit_trajectory_study.sh   # n=8 VALIDATION. Run first.
 #   sbatch --array=1-3 submit_trajectory_study.sh   # the operating line
 #   sbatch --array=4-5 submit_trajectory_study.sh   # where do trajectories break?
+#   sbatch --array=6   submit_trajectory_study.sh   # reseeded validation (see task 6)
 #
 # WHAT THIS DECIDES. The MPDO study showed the vectorised route needs
 # chi ~ 1e7 at the n=24 operating point. That bounds one classical method. This
@@ -58,25 +59,45 @@ case $SLURM_ARRAY_TASK_ID in
   0) export N=8 GAMMA=0.05 NTRAJ=400 MAXDIM=256 NT=15 TMAX_FACTOR=1.5
      export CHI_MPDO=256 OUTDIR=traj_validate_n8 TAG=val ;;
 
+  # --- 6: RESEED of task 0. The first pass agreed with the exact MPDO curve at
+  # 0/15 points beyond 2 sigma, but 13 of 15 deviations were NEGATIVE (mean
+  # -0.9 sigma). Successive times share the same trajectory ensemble so they are
+  # heavily correlated and this is probably one coherent random excursion --
+  # but a residual jump bias would look identical. If the offset flips sign with
+  # a new seed it was noise; if it stays negative, look at reset_ancilla! again.
+  6) export N=8 GAMMA=0.05 NTRAJ=400 MAXDIM=256 NT=15 TMAX_FACTOR=1.5
+     export SEED0=77000 CHI_MPDO=256 OUTDIR=traj_validate_n8_seed2 TAG=val2 ;;
+
   # --- 1-3: the operating line, gamma* = 1.4/n, t* = 0.45n.
-  # CHI_MPDO values are from Table 5 of the report (extrapolated along the same
-  # line); pass measured ones instead once the maxdim ladders have run.
-  1) export N=16 GAMMA=0.0875 NTRAJ=200 MAXDIM=512
+  # NTRAJ IS SMALL ON PURPOSE and was cut after the n=8 timing. That run took
+  # 30 min for 400 trajectories at chi=16; cost goes as NTRAJ * steps * n *
+  # chi^3, and chi grows with n, so 200 trajectories at n=24 would be ~20 h.
+  # It is also unnecessary: the only thing these runs must measure is the chi
+  # DISTRIBUTION, which converges in a few tens of trajectories. The N that
+  # enters the cost formula is extrapolated from the measured per-trajectory
+  # variance by Ntraj_for(), not run explicitly. With NTRAJ<=64 read chi_max
+  # rather than chi_p95 -- the p95 of 32 samples is just the second largest.
+  #
+  # CHI_MPDO from Table 5 of the report (extrapolated along the same line).
+  1) export N=16 GAMMA=0.0875 NTRAJ=128 MAXDIM=1024
      export CHI_MPDO=524288      OUTDIR=traj_n16 TAG=n16 ;;   # 2^19
-  2) export N=20 GAMMA=0.0700 NTRAJ=200 MAXDIM=512
+  2) export N=20 GAMMA=0.0700 NTRAJ=64  MAXDIM=1024
      export CHI_MPDO=8388608     OUTDIR=traj_n20 TAG=n20 ;;   # 2^23
-  3) export N=24 GAMMA=0.0583 NTRAJ=200 MAXDIM=512
+  3) export N=24 GAMMA=0.0583 NTRAJ=48  MAXDIM=1024
      export CHI_MPDO=134217728   OUTDIR=traj_n24 TAG=n24 ;;   # 2^27
 
-  # --- 4-5: push out along the line until the TRAJECTORY method breaks too.
-  # Rough expectation: trajectory entropy tracks the closed-system value,
-  # S_vN ~ 0.7 t, so chi_traj becomes infeasible around S_vN ~ 30 bits, i.e.
-  # t ~ 43, i.e. n ~ 95. These two bracket the approach to that.
-  # MAXDIM=1024 here: expect saturation, and read chi_traj as a lower bound.
-  4) export N=32 GAMMA=0.0438 NTRAJ=100 MAXDIM=1024
-     export CHI_MPDO=1.7e10      OUTDIR=traj_n32 TAG=n32 ;;
-  5) export N=40 GAMMA=0.0350 NTRAJ=64  MAXDIM=1024
-     export CHI_MPDO=1.4e13      OUTDIR=traj_n40 TAG=n40 ;;
+  # --- 4-5: push out until the TRAJECTORY method breaks too. The n=8 run gave
+  # S_traj ~ 0.43 S_op and chi_traj ~ 3.8*2^(1.24 S_traj) -- a much thinner
+  # Schmidt tail than the operator law 6*2^(1.61 S). Projecting both along the
+  # operating line puts the trajectory method past feasibility around n ~ 45-50,
+  # i.e. BOTH methods fail only from there on. These two tasks test that
+  # projection, which currently rests on a single point.
+  # Expect MAXDIM to bind: chi_traj then comes back as a lower bound, which is
+  # the conservative direction for a hardness claim.
+  4) export N=32 GAMMA=0.0438 NTRAJ=16 MAXDIM=1024
+     export CHI_MPDO=3.2e10      OUTDIR=traj_n32 TAG=n32 ;;
+  5) export N=40 GAMMA=0.0350 NTRAJ=12 MAXDIM=1024
+     export CHI_MPDO=7.9e12      OUTDIR=traj_n40 TAG=n40 ;;
 esac
 
 mkdir -p "$OUTDIR"
