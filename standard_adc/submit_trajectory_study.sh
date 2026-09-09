@@ -3,7 +3,7 @@
 #
 #   sbatch --array=0   submit_trajectory_study.sh   # n=8 VALIDATION. Run first.
 #   sbatch --array=1-3 submit_trajectory_study.sh   # the operating line
-#   sbatch --array=4-5 submit_trajectory_study.sh   # where do trajectories break?
+#   sbatch --array=7-9 submit_trajectory_study.sh   # cheap fill-in, pins the exponent
 #   sbatch --array=6   submit_trajectory_study.sh   # reseeded validation (see task 6)
 #
 # WHAT THIS DECIDES. The MPDO study showed the vectorised route needs
@@ -83,21 +83,36 @@ case $SLURM_ARRAY_TASK_ID in
      export CHI_MPDO=524288      OUTDIR=traj_n16 TAG=n16 ;;   # 2^19
   2) export N=20 GAMMA=0.0700 NTRAJ=64  MAXDIM=1024
      export CHI_MPDO=8388608     OUTDIR=traj_n20 TAG=n20 ;;   # 2^23
-  3) export N=24 GAMMA=0.0583 NTRAJ=48  MAXDIM=1024
+  # Task 3 RETUNED after it hit the 12 h wall at NTRAJ=48. On 16 threads,
+  # 48 trajectories is 3 sequential waves; 16 is exactly one, so the wall time
+  # is the cost of a SINGLE trajectory (~5.6 h at n=24). TMAX_FACTOR=0.5 stops
+  # just past the peak at t*=0.45n instead of running 33% beyond it.
+  # 16 trajectories is enough: chi is what these runs must measure, and N for
+  # the <Z> error bar is extrapolated from the variance (measured N ~ 800 at
+  # both n=16 and n=20, essentially flat). Read chi_max, not chi_p95.
+  3) export N=24 GAMMA=0.0583 NTRAJ=16 MAXDIM=1024 TMAX_FACTOR=0.5
      export CHI_MPDO=134217728   OUTDIR=traj_n24 TAG=n24 ;;   # 2^27
 
-  # --- 4-5: push out until the TRAJECTORY method breaks too. The n=8 run gave
-  # S_traj ~ 0.43 S_op and chi_traj ~ 3.8*2^(1.24 S_traj) -- a much thinner
-  # Schmidt tail than the operator law 6*2^(1.61 S). Projecting both along the
-  # operating line puts the trajectory method past feasibility around n ~ 45-50,
-  # i.e. BOTH methods fail only from there on. These two tasks test that
-  # projection, which currently rests on a single point.
-  # Expect MAXDIM to bind: chi_traj then comes back as a lower bound, which is
-  # the conservative direction for a hardness claim.
-  4) export N=32 GAMMA=0.0438 NTRAJ=16 MAXDIM=1024
-     export CHI_MPDO=3.2e10      OUTDIR=traj_n32 TAG=n32 ;;
-  5) export N=40 GAMMA=0.0350 NTRAJ=12 MAXDIM=1024
-     export CHI_MPDO=7.9e12      OUTDIR=traj_n40 TAG=n40 ;;
+  # --- 7-9: FILL IN THE CHEAP END. The crossover estimate rests on the
+  # exponent of chi_traj(n), currently fitted on TWO points (n=16, 20). Cost per
+  # trajectory grows ~8x per dn=4, so points BELOW n=16 are nearly free and buy
+  # far more exponent precision per core-hour than one more expensive point.
+  # n=16 took 5.3 core-min/trajectory; n=14/12/10 are ~1.9/0.7/0.25.
+  7) export N=10 GAMMA=0.1400 NTRAJ=256 MAXDIM=512
+     export CHI_MPDO=1.0e3       OUTDIR=traj_n10 TAG=n10 ;;
+  8) export N=12 GAMMA=0.1167 NTRAJ=256 MAXDIM=512
+     export CHI_MPDO=6.5e3       OUTDIR=traj_n12 TAG=n12 ;;
+  9) export N=14 GAMMA=0.1000 NTRAJ=256 MAXDIM=1024
+     export CHI_MPDO=4.2e4       OUTDIR=traj_n14 TAG=n14 ;;
+
+  # NOTE ON THE ABANDONED n=32 AND n=40 TASKS.
+  # They were in an earlier version of this script and are NOT feasible. Cost
+  # per trajectory rises ~8x per dn=4 (measured: 5.3 core-min at n=16, 42 at
+  # n=20), so n=32 is ~350 core-HOURS per trajectory and n=40 is ~2e4. Even a
+  # single trajectory does not fit in a 12 h job. n=24 (task 3) is the practical
+  # ceiling for the trajectory route on this cluster, which means the crossover
+  # at n~41-47 will remain an extrapolation, not a measurement. Say so in the
+  # write-up rather than implying it was verified.
 esac
 
 mkdir -p "$OUTDIR"
