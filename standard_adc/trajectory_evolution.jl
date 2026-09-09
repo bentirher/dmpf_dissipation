@@ -217,12 +217,32 @@ Entropies are in bits.
 """
 function trajectory_metrics(psi::MPS, n::Int, tols::Vector{Float64})
     nb = n - 1
-    S = zeros(nb); chis = [zeros(Int, nb) for _ in tols]; ld = zeros(Int, nb)
+    S = zeros(nb); chis = [zeros(Int, nb) for _ in tols]
+
+    # ONE copy, ONE left-to-right sweep.
+    #
+    # The first version called bond_schmidt_spectrum(psi, b) per bond, and that
+    # helper does a NON-MUTATING orthogonalize -- so it copied the whole MPS and
+    # re-orthogonalised from scratch (n-1) times per snapshot, i.e. O(n^2)
+    # gauge work at chi^3 each. Invisible at n=10 where chi=13; a large fraction
+    # of the runtime at n=24 where chi~600 and there are 23 bonds. Here the
+    # centre is moved rightwards two sites at a time instead, which is O(1)
+    # amortised per bond.
+    phi = orthogonalize(psi, sys_bond(1))
     for b in 1:nb
-        p = bond_schmidt_spectrum(psi, sys_bond(b))
-        S[b] = von_neumann_entropy(p); ld[b] = length(p)
-        for (ti,tol) in enumerate(tols); chis[ti][b] = chi_required(p, tol); end
+        bb = sys_bond(b)
+        b > 1 && orthogonalize!(phi, bb)     # centre moves right by 2: cheap
+        lefties = uniqueinds(phi[bb], phi[bb+1])
+        _, Sv, _ = svd(phi[bb], lefties)
+        p = Float64[]
+        for i in 1:dim(Sv, 1); push!(p, abs2(Sv[i,i])); end
+        tot = sum(p)
+        tot > 0 && (p ./= tot)
+        sort!(p; rev=true)
+        S[b] = von_neumann_entropy(p)
+        for (ti, tol) in enumerate(tols); chis[ti][b] = chi_required(p, tol); end
     end
+
     mid = max(1, n ÷ 2)
     return (S_mid=S[mid], S_max=maximum(S), S_profile=S,
             chi_mid=[c[mid] for c in chis], chi_max=[maximum(c) for c in chis],
