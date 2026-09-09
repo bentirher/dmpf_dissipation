@@ -83,14 +83,26 @@ case $SLURM_ARRAY_TASK_ID in
      export CHI_MPDO=524288      OUTDIR=traj_n16 TAG=n16 ;;   # 2^19
   2) export N=20 GAMMA=0.0700 NTRAJ=64  MAXDIM=1024
      export CHI_MPDO=8388608     OUTDIR=traj_n20 TAG=n20 ;;   # 2^23
-  # Task 3 RETUNED after it hit the 12 h wall at NTRAJ=48. On 16 threads,
-  # 48 trajectories is 3 sequential waves; 16 is exactly one, so the wall time
-  # is the cost of a SINGLE trajectory (~5.6 h at n=24). TMAX_FACTOR=0.5 stops
-  # just past the peak at t*=0.45n instead of running 33% beyond it.
-  # 16 trajectories is enough: chi is what these runs must measure, and N for
-  # the <Z> error bar is extrapolated from the variance (measured N ~ 800 at
-  # both n=16 and n=20, essentially flat). Read chi_max, not chi_p95.
-  3) export N=24 GAMMA=0.0583 NTRAJ=16 MAXDIM=1024 TMAX_FACTOR=0.5
+  # Task 3 RETUNED after it hit the 12 h wall at NTRAJ=48.
+  #
+  # Budget, from the measured cost of one wave of 16 trajectories:
+  #     n     10    12    14    16    20      -> min per wave
+  #         0.62  1.20  2.33  5.25  41.8
+  #   d ln(cost)/dn = 0.33, 0.33, 0.41, 0.52  -- accelerating, so extrapolate
+  #   with the LAST slope: n=24 is ~5.5 h per wave at TMAX_FACTOR=0.6, or
+  #   ~4.6 h at 0.5. Plus the metric-sweep fix in trajectory_evolution.jl and
+  #   NT=12 instead of 20, both of which bite hardest here. Expect ~4 h.
+  #
+  # On 16 threads, 48 trajectories is 3 sequential waves and 16 is exactly one,
+  # so wall time is the cost of a single wave. That is the whole reason the
+  # previous attempt died. 16 is enough: chi is what this run must measure, and
+  # N for the <Z> error bar is extrapolated from the variance (measured N ~ 765
+  # to 1929 across n=10..20, no trend). Quote chi_mean, not chi_max -- chi_max
+  # is an extreme value and grows with NTRAJ, so at NTRAJ=16 it is not
+  # comparable with the NTRAJ=256 points at small n.
+  #
+  # TMAX_FACTOR=0.5 gives t=12, just past the peak at t*=10.8.
+  3) export N=24 GAMMA=0.0583 NTRAJ=16 MAXDIM=1024 TMAX_FACTOR=0.5 NT=12
      export CHI_MPDO=134217728   OUTDIR=traj_n24 TAG=n24 ;;   # 2^27
 
   # --- 7-9: FILL IN THE CHEAP END. The crossover estimate rests on the
