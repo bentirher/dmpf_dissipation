@@ -1,0 +1,662 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb,graphicx,booktabs,xcolor,caption,microtype}
+\usepackage[colorlinks=true,linkcolor=NavyBlue,citecolor=Green,urlcolor=NavyBlue]{hyperref}
+\usepackage[usenames,dvipsnames]{xcolor}
+\usepackage{tcolorbox}
+\usepackage{enumitem}
+\tcbuselibrary{skins,breakable}
+
+\newtcolorbox{keybox}[1][]{colback=Goldenrod!10,colframe=Goldenrod!70!black,
+  boxrule=0.7pt,left=6pt,right=6pt,top=5pt,bottom=5pt,breakable,#1}
+\newtcolorbox{warnbox}[1][]{colback=BrickRed!6,colframe=BrickRed!70!black,
+  boxrule=0.7pt,left=6pt,right=6pt,top=5pt,bottom=5pt,breakable,#1}
+
+\newcommand{\Sop}{S_{\mathrm{op}}}
+\newcommand{\chreq}{\chi_{\mathrm{req}}}
+\newcommand{\nsat}{n_{\mathrm{sat}}}
+
+\title{\bfseries Where does the dissipative Heisenberg chain become\\
+classically hard?\\[4pt]
+\large Operator entanglement and bond-dimension requirements for\\
+vectorised MPS/TEBD, and what they imply for hardware runs}
+\author{Internal working note}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+We map out the region of parameter space $(n,\gamma,t)$ in which a vectorised
+matrix-product simulation of the disordered Heisenberg chain under bulk
+amplitude damping stops being cheap, with the goal of choosing parameters for a
+quantum-hardware experiment that implements the damping via ancillas. Three
+results. (i)~Amplitude damping produces an \emph{entanglement barrier}: the
+operator entanglement rises, peaks, and decays to zero, because the dissipator's
+steady state is the trivial product state $|0\cdots0\rangle$. The peak sits at
+$t^\ast\!\approx\!0.45\,n$, \emph{not} at $t\!\sim\!1/\gamma$ as we initially
+assumed. (ii)~Above a threshold system size $\nsat(\gamma)\approx1.4/\gamma$ the
+peak becomes completely independent of $n$ --- an area law --- and the classical
+cost stops growing, making the experiment pointless at any size. This is
+measured, not inferred: at $\gamma=0.10$ the peak is $4.86,4.89,4.90,4.90$~bits
+for $n=12,16,20,24$. (iii)~Along the operating line $\gamma^\ast=1.4/n$,
+$t^\ast=0.45n$, the required bond dimension already exceeds single-node
+feasibility at $n\approx20$. The useful empirical law is
+$\chreq \approx 6\cdot 2^{1.61\,\Sop}$: the Schmidt tail costs a further
+factor $2^{0.6\,\Sop}$ beyond the naive $2^{\Sop}$.
+We also report a methodological finding: the order-2 product formula in the
+existing codebase is not second order in the open case, and we give a corrected
+symmetric splitting. We close by stating plainly what these results do
+\emph{not} establish --- they bound one classical method, and the obvious
+competitor (quantum trajectories) is untested.
+\end{abstract}
+
+\tableofcontents
+\vspace{4mm}
+
+%======================================================================
+\section{Purpose and scope}
+
+The target experiment is a quantum circuit that implements the Heisenberg
+Hamiltonian together with an amplitude-damping channel realised through ancilla
+qubits. For that experiment to be worth running, the parameters
+$(n,\gamma,t)$ must be chosen in a region where a classical simulation is
+\emph{not} cheap. This note determines that region.
+
+The scope is deliberately narrow. We study only the physical state
+$\rho(t)$ and the cost of representing it as a matrix-product operator. Nothing
+here concerns the middle-out contraction scheme, the $F_{ij}$ Gram matrix, or
+multi-product formulas; those objects have a different and much less favourable
+cost scaling, which is why the state route reaches $n=24$ where the $F$ route
+cannot.
+
+The reader who wants only the answer should read
+Sec.~\ref{sec:operating} (recommended operating points) and
+Sec.~\ref{sec:limits} (what this does not prove).
+
+%======================================================================
+\section{The system}
+
+\subsection{Hamiltonian and dissipator}
+
+We simulate the Lindblad master equation
+\begin{equation}
+  \frac{d\rho}{dt} \;=\; -i[H,\rho]
+  \;+\; \sum_{j=1}^{n}\gamma_j\Big(\sigma^-_j\rho\,\sigma^+_j
+        -\tfrac12\{\sigma^+_j\sigma^-_j,\rho\}\Big),
+  \label{eq:lindblad}
+\end{equation}
+with the disordered anisotropic Heisenberg Hamiltonian of
+Eq.~(13) of the main manuscript,
+\begin{equation}
+  H \;=\; -\sum_{j=1}^{n-1}\Big[
+      J_j\big(X_jX_{j+1}+Y_jY_{j+1}\big) + 2J_j\,Z_jZ_{j+1}\Big].
+  \label{eq:H}
+\end{equation}
+The dissipator contains \emph{only} the lowering operator $\sigma^-$: this is
+amplitude damping, not a balanced emission/absorption bath. Two consequences
+follow immediately and shape everything below.
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+\item \textbf{The steady state is trivial.} Eq.~\eqref{eq:lindblad} drives the
+  chain to $\rho_\infty=|0\cdots0\rangle\langle0\cdots0|$, a product state with
+  zero entanglement of any kind. Whatever entanglement the dynamics generates
+  must therefore come back down. There is no long-time plateau to exploit, and
+  ``run longer and it gets harder'' is false for this model.
+\item \textbf{The noise is non-unital.} Intuition imported from depolarising
+  noise does not transfer; see Ref.~\cite{fefferman2024nonunital}, which shows
+  that under non-unital noise the output distribution of a random circuit never
+  anticoncentrates at any depth, in contrast to the unital case.
+\end{itemize}
+
+Unless stated otherwise all runs use a uniform chain $J_j=J=0.5$ (the mean of
+the $\mathcal{U}[1/4,3/4]$ disorder used elsewhere in the project) and uniform
+$\gamma_j=\gamma$, starting from the N\'eel product state. A uniform $J$ was
+chosen deliberately for the scaling study: a single disorder realisation adds
+run-to-run noise that is easily mistaken for $n$-dependence.
+
+\subsection{What the gates actually implement}
+\label{sec:gateconv}
+
+A caveat that matters for anyone converting our times into the units of the
+literature. The two-site bond gate in the codebase is
+$R_{ZZ}(\beta)R_{YY}(\alpha)R_{XX}(\alpha)$ with $\alpha=J_j\,dt$ and
+$\beta=2J_j\,dt$, which is $\exp(-i\,dt\,h_j)$ for
+\begin{equation}
+  h_j \;=\; \tfrac{J_j}{2}\big(X_jX_{j+1}+Y_jY_{j+1}\big) + J_j\,Z_jZ_{j+1}
+  \;=\; -\tfrac12 H_j^{\text{Eq.}\eqref{eq:H}} .
+\end{equation}
+The overall sign is irrelevant for entanglement, but the factor of two is not:
+the effective time is half what a naive reading of Eq.~\eqref{eq:H} suggests.
+All times quoted in this note are the code's $t$. The anisotropy ratio is
+$|J_z/J_{xy}|=2$, which is on the mild side --- Ref.~\cite{preisser2023comparing}
+finds that operator entanglement \emph{decreases} with increasing $ZZ$ strength.
+
+%======================================================================
+\section{Simulation method}
+
+\subsection{Vectorisation}
+
+We vectorise $\rho\to|\rho\rangle\rangle$ and propagate it as an MPS over $n$
+doubled sites, each carrying a ket and a bra index, so the local dimension is
+$4$. Time evolution is TEBD: alternating odd/even Hamiltonian layers plus a
+single-site dissipator layer, with singular-value truncation at every two-site
+gate.
+
+\subsection{Bond-dimension ceilings}
+
+Three different ceilings appear in this project and confusing them is easy:
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Object & Local dim. & Ceiling at bond $b$ \\
+\midrule
+$|\psi\rangle$, pure state MPS & 2 & $2^{\min(b,\,n-b)}$ \\
+$|\rho\rangle\rangle$, MPDO as MPS & 4 & $4^{\min(b,\,n-b)}$ \\
+$F_{ij}$, superoperator MPO & 16 & $16^{\min(b,\,n-b)}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+At $n=20$ these are $10^3$, $10^6$ and $10^{12}$. The state route is what makes
+this study possible at all.
+
+\subsection{Trotter splitting, and a correction}
+\label{sec:trotter}
+
+The existing \texttt{get\_open\_step\_gates} at \texttt{order=2} composes, in
+application order,
+\begin{equation*}
+  \mathrm{odd}(dt/2),\quad \mathrm{even}(dt),\quad \mathrm{diss}(dt),\quad
+  \mathrm{odd}(dt/2)
+  \qquad\text{i.e.}\qquad e^{A\,dt/2}e^{C\,dt}e^{B\,dt}e^{A\,dt/2},
+\end{equation*}
+with $A,B,C$ the odd, even and dissipator generators. The outer layer is symmetrised but $B$ and $C$ are
+composed as a bare product, leaving an uncancelled commutator,
+\begin{equation}
+  e^{Cdt}e^{Bdt} = \exp\!\Big((B+C)dt + \tfrac12[C,B]\,dt^2+\dots\Big),
+\end{equation}
+so the global error carries an $O(dt)$ term whenever $[B,C]\neq0$. For
+$\gamma=0$ we have $C=0$, the composition collapses to plain Strang and is
+genuinely second order --- which is why closed-system testing would never have
+revealed this.
+
+We measured the order directly at $n=8$, where the MPDO ceiling $4^4=256$ equals
+the truncation cap and the run is therefore \emph{exact}, so the only error left
+is the product formula. Using ratios of successive differences (which need no
+converged reference), Table~\ref{tab:order} and Fig.~\ref{fig:method}(b):
+
+\begin{table}[h]
+\centering
+\caption{Effective Trotter order $p_{\mathrm{eff}}=\log_2$(ratio of successive
+differences on halving $dt$), measured at $n=8$, $\gamma=0.05$, with truncation
+identically zero. A clean second-order scheme gives $p_{\mathrm{eff}}=2$.}
+\label{tab:order}
+\begin{tabular}{lcccc}
+\toprule
+$t$ & 2 & 4 & 6 & 10 \\
+\midrule
+\texttt{:project} (existing) & 1.61,\,1.44 & 1.57,\,1.39 & 2.30,\,2.94 & sign change \\
+\texttt{:strang} (corrected) & 2.02,\,2.20 & 1.97,\,1.96 & 2.00,\,2.04 & 2.09,\,2.53 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The existing scheme is not cleanly first order either; it is a mixture, with the
+error changing \emph{sign} between $dt=0.05$ and $dt=0.025$ at $t=10$ --- the
+fingerprint of two error terms of opposite parity. The corrected palindromic
+splitting
+\begin{equation*}
+  \mathrm{odd}(dt/2),\ \mathrm{even}(dt/2),\ \mathrm{diss}(dt),\
+  \mathrm{even}(dt/2),\ \mathrm{odd}(dt/2)
+\end{equation*}
+is cleanly second order at every time. Being palindromic ($S(-dt)=S(dt)^{-1}$)
+forces the effective generator to expand in even powers of $dt$ only.
+
+Practically: at $t=4$, \texttt{:strang} at $dt=0.05$ is more accurate than
+\texttt{:project} at $dt=0.025$ while taking a quarter of the steps. It costs
+$\sim$33\% more per step (one extra even layer), a net factor $\sim$2.6 at fixed
+accuracy. All production runs reported below use \texttt{:strang} at $dt=0.05$,
+for which the error in $\Sop$ relative to $dt=0.02$ is
+0.02\%/0.16\%/0.50\% at $t=3/6/9$.
+
+\begin{warnbox}
+\textbf{Wider implication, not pursued here.} The order-4 routine applies the
+Yoshida triple-jump to this same order-2 composition. That construction reaches
+fourth order only if the base is second order \emph{and} palindromic, and the
+base is neither. Anything in the project that relies on the nominal order of
+\texttt{get\_open\_step\_gates} --- in particular multi-product-formula
+coefficient derivations, which assume an even-powers-only error expansion ---
+should be re-examined.
+\end{warnbox}
+
+\subsection{The closed-system baseline}
+
+The $\gamma=0$ control must be computed as a \emph{pure state}, not as a density
+matrix. Our first attempt propagated $|\rho\rangle\rangle$ with
+\texttt{dissipation=false} at $\chi_{\max}=256$ and produced purities
+$\mathrm{Tr}\rho^2 = 1.69,\ 4.19,\ 24.2$ at $n=12,16,20$. Purity is identically
+$1$ for a pure state, so those runs were unphysical beyond $t\approx2.5$ and had
+to be discarded.
+
+The fix uses local dimension 2 and then reconstructs the operator-space
+quantities \emph{exactly}. For $\rho=|\psi\rangle\langle\psi|$ the operator
+Schmidt values across a cut are the pairwise products of the state's Schmidt
+values $\{p_i\}$, so
+\begin{equation}
+  \{\lambda^{\mathrm{op}}\} = \{p_ip_j\},\qquad
+  \Sop = 2S_{\mathrm{vN}},\qquad
+  \chreq^{\mathrm{op}}(\epsilon)\ \text{from sorting}\ \{p_ip_j\}.
+  \label{eq:pureop}
+\end{equation}
+This gives the bond dimension an MPDO code \emph{would} have needed, from a
+calculation that never pays MPDO cost, and it makes purity exact by
+construction. Energy conservation via an MPO then provides a sharp truncation
+diagnostic.
+
+%======================================================================
+\section{Metrics, and why we use two}
+\label{sec:metrics}
+
+\paragraph{Operator entanglement $\Sop$.} The von~Neumann entropy of the
+normalised squared Schmidt spectrum of $|\rho\rangle\rangle$ across a cut,
+in \emph{bits}, so that $\Sop=\log_2\chi$ is the exact statement of ``a bond
+dimension $\chi$ can support this much''. We report the middle cut and the
+maximum over cuts; measured profiles show these agree to within 4\%, so the
+middle cut is the bottleneck.
+
+\paragraph{Required bond dimension $\chreq(\epsilon)$.} The smallest number of
+Schmidt values whose discarded weight falls below $\epsilon$ (we use $10^{-6}$
+and $10^{-10}$). This, not the entropy, sets the runtime and memory.
+
+\paragraph{Why both.} They are not interchangeable, and the recent literature
+turns on the difference. Ref.~\cite{vilchez2025direct} reports that the operator
+entanglement can \emph{fall} with increasing $\gamma$ while the bond dimension
+actually required does not, because the entropy characterises the final state
+whereas the simulation must carry the whole trajectory. Our data confirms the
+gap quantitatively: Fig.~\ref{fig:growth}(c) shows
+\begin{equation}
+  \boxed{\ \chreq \;\approx\; 6\cdot 2^{\,1.61\,\Sop}\ }
+  \label{eq:chiS}
+\end{equation}
+over three decades in $\chi$ with residual RMS $0.03$ bits. The naive $2^{\Sop}$
+underestimates the cost by a factor $2^{0.61\Sop}$, which is $\times64$ at
+$\Sop=10$ bits. \emph{Do not size a calculation from the entropy alone.}
+
+\paragraph{Validity diagnostics.} Every recorded point carries
+$\mathrm{Tr}\rho$ (must be 1), $\mathrm{Tr}\rho^2$ (must lie in $[0,1]$ and
+$\to1$ as the state relaxes to $|0\cdots0\rangle$), and a \texttt{saturated}
+flag that fires whenever $\chi_{\max}$ binds at any bond. The flag matters
+because $\chreq$ is read off the \emph{stored} spectrum: if truncation is
+active, $\chreq$ cannot exceed $\chi_{\max}$ and the measurement is
+\textbf{censored}, not converged. In an early run we measured
+$\chreq = 64,\,127,\,249$ at $\chi_{\max}=64,\,128,\,256$ --- tracking the cap,
+not converging. Any $\chreq$ from a saturated row is a lower bound only.
+
+%======================================================================
+\section{What we expected, from the literature}
+\label{sec:lit}
+
+\paragraph{Closed system.} Ref.~\cite{prosen2007integrability} is the canonical
+statement: the MPO rank needed to represent time-evolved observables grows as
+$\exp(\mathrm{const}\cdot t)$ for non-integrable chains and only polynomially
+when the model is integrable. Our disordered-bond chain is non-integrable; bond
+disorder alone does not localise (that would need random fields).
+
+\paragraph{Noise as a simulability threshold.} Ref.~\cite{noh2020efficient}
+established that above a characteristic system size the maximum achievable MPO
+entanglement is bounded by a constant depending only on the error rate, not on
+system size, though that bound grows rapidly as the rate decreases.
+Ref.~\cite{azad2023phase} finds an actual transition as environment coupling
+increases, beyond which classical simulation succeeds at all times.
+
+\paragraph{Closest prior work.} Ref.~\cite{preisser2023comparing} simulates an
+XXZ chain under spontaneous emission and absorption from a N\'eel state and
+compares operator entanglement (MPDO) against trajectory entanglement. It is
+essentially our model. Their reported behaviour: fast growth and inefficiency at
+$\gamma/J=0.01$; a clear rise-and-fall at $\gamma/J\gtrsim0.1$; and, for the
+maximally imbalanced case (emission only, i.e.\ ours), relaxation to a trivial
+product steady state so that $\Sop\to0$.
+
+\paragraph{The prediction we carried in, and got wrong.} From the rise-and-fall
+picture we assumed the barrier peaks at $t\sim1/\gamma$ and that the hard regime
+was therefore \emph{small $\gamma$ at late times}. Both halves of that turned
+out to be wrong; see Sec.~\ref{sec:wrong}. The cost of the error was concrete:
+the first production sweep set $t_{\max}\sim2/\gamma$, which at $\gamma=0.01$
+meant integrating to $t=200$ to capture a peak at $t=4$, and the jobs died on
+walltime before reaching large $n$.
+
+%======================================================================
+\section{Numerical results}
+
+All runs below: uniform $J=0.5$, N\'eel initial state, \texttt{:strang}
+splitting, $dt=0.05$, cutoff $10^{-12}$, $\chi_{\max}=256$ for the open runs.
+
+\subsection{The barrier is real, and it is transient}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figs/fig1_barrier.pdf}
+\caption{Operator entanglement versus time for each dissipation rate. The
+characteristic shape is a \emph{barrier}: rise, peak, decay to zero, as required
+by the trivial product steady state of amplitude damping. Crosses mark points
+where $\mathrm{Tr}\rho<0.95$, i.e.\ where $\chi_{\max}=256$ was too small and the
+data is untrustworthy. Note the $\gamma=0.10$ and $\gamma=0.20$ panels, where
+curves for different $n$ lie on top of one another.}
+\label{fig:barrier}
+\end{figure}
+
+Fig.~\ref{fig:barrier} confirms the barrier at every $\gamma$. The measured peak
+times are $t^\ast \approx 4.4$--$4.8$ ($\gamma=0.10$), $4.8$--$8.0$
+($\gamma=0.05$), against $1/\gamma = 10$ and $20$. The peak location is set by
+the \emph{system size}, $t^\ast\approx0.45\,n$, not by the dissipation rate,
+except at large $\gamma$ where dissipation cuts the growth off first.
+
+\subsection{Dissipation is invisible until $\gamma t\approx0.4$}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.86\textwidth]{figs/fig4_method.pdf}
+\caption{(a) Ratio of open to closed operator entanglement at $n=8$, plotted
+against $\gamma t$. Four dissipation rates spanning two decades collapse onto a
+single curve which stays at unity until $\gamma t\approx0.4$ and then falls off
+a cliff. (b) Measured effective Trotter order (Sec.~\ref{sec:trotter}); the
+missing \texttt{:project} point at $t=10$ is where its error changes sign.}
+\label{fig:method}
+\end{figure}
+
+Fig.~\ref{fig:method}(a) is the cleanest scaling result in the study: the ratio
+$\Sop^{\mathrm{open}}/\Sop^{\mathrm{closed}}$ collapses across
+$\gamma\in[0.01,0.2]$ and remains indistinguishable from unity until
+$\gamma t\approx0.4$. Before that point the amplitude damping is doing nothing
+measurable --- the simulation is a closed-system quench.
+
+Combining $t_{\mathrm{dep}}\approx0.4/\gamma$ with the closed-system saturation
+time $t_{\mathrm{sat}}\approx n/2$ gives the condition for dissipation, rather
+than finite size, to cap the entanglement:
+\begin{equation}
+  \frac{0.4}{\gamma}\lesssim\frac{n}{2}
+  \qquad\Longleftrightarrow\qquad
+  \gamma\gtrsim\frac{0.8}{n}.
+\end{equation}
+
+\subsection{The area law, and the saturation size}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figs/fig2_saturation.pdf}
+\caption{(a) Peak operator entanglement versus $n$. At $\gamma=0.20$ and
+$\gamma=0.10$ the peak stops moving; at $\gamma\le0.05$ it is still climbing at
+the largest $n$ reached. (b) The same data as increments: zero means adding
+qubits is classically free. (c) Operating diagram. The line
+$\nsat=1.4/\gamma$ is calibrated on the two saturating rates; stars mark the
+recommended operating points.}
+\label{fig:saturation}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\caption{Peak $\Sop$ [bits] versus $n$ and $\gamma$, with the minimum trace over
+the run as a validity indicator. Entries with $\mathrm{Tr}\rho<0.95$ (bold) are
+truncation-corrupted and are lower bounds at best. $n=8$ is exact
+(MPDO ceiling $4^4=256$ equals $\chi_{\max}$).}
+\label{tab:peaks}
+\begin{tabular}{lcccccc}
+\toprule
+$\gamma$ & $n=8$ & $n=12$ & $n=16$ & $n=20$ & $n=24$ & $\min\mathrm{Tr}\rho$ (worst $n$)\\
+\midrule
+0.02 & 4.50 & 5.51 & \textbf{6.36} & \textbf{6.89} & --- & 0.644 \\
+0.05 & 4.48 & 5.51 & 6.26 & \textbf{6.70} & --- & 0.849 \\
+0.10 & 3.96 & 4.86 & 4.89 & 4.90 & 4.90 & 0.978 \\
+0.20 & 2.93 & 2.92 & 2.92 & 2.92 & --- & $>0.999$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:peaks} contains the central result.
+
+\begin{keybox}
+\textbf{At $\gamma=0.10$ the peak is $4.86,4.89,4.90,4.90$ bits for
+$n=12,16,20,24$.} It does not move over a doubling of the system size. The
+bond-resolved profile is a flat bulk plateau with edge structure only, the trace
+stays above $0.978$, and the purity correctly returns towards $1$ as the state
+relaxes to $|0\cdots0\rangle$. This is a clean, verified area law: the classical
+cost is independent of $n$, so a hardware experiment at $\gamma=0.10$ is
+classically reproducible at \emph{any} system size.
+\end{keybox}
+
+With $\gamma=0.20$ saturating by $n=8$ and $\gamma=0.10$ by $n\approx16$, we
+calibrate
+\begin{equation}
+  \boxed{\ \nsat(\gamma)\;\approx\;\frac{1.4}{\gamma}\ }
+\end{equation}
+Below this line the peak is set by finite size; above it, by $\gamma$.
+
+A second observation from Table~\ref{tab:peaks}: $\gamma=0.02$ and $\gamma=0.05$
+are essentially \emph{indistinguishable} at every $n$ we reached
+($4.50/4.48$, $5.51/5.51$, $6.36/6.26$). Below the saturation line the peak
+does not depend on $\gamma$ at all, so reducing $\gamma$ from $0.05$ to $0.02$
+buys no extra classical difficulty while making the dissipation nearly
+invisible. There is no reason to run at $\gamma=0.02$.
+
+\subsection{Growth laws and the cost wall}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figs/fig3_growth.pdf}
+\caption{(a,b) Closed-system growth of $\Sop$ and $\chreq$. Filled markers are
+the pre-saturation window, where the run is exact (below both the truncation cap
+and the physical ceiling, and before the light cone reaches the boundary); faded
+lines are the truncated continuation. The curves for all $n$ collapse, as they
+must while the light cone is still inside the chain. (c) The relation
+Eq.~\eqref{eq:chiS} between required bond dimension and entropy. (d)
+Extrapolation along the operating line, against measured lower bounds.}
+\label{fig:growth}
+\end{figure}
+
+In the pre-saturation window the closed-system data collapses across $n$ and
+gives, with per-$n$ slopes $1.34,1.34,1.39,1.51$ and $2.14,2.14,2.24,2.45$
+respectively,
+\begin{equation}
+  \Sop(t)\approx 1.39\,t\ \ \text{bits},
+  \qquad
+  \log_2\chreq(t)\approx 2.24\,t + 2.7 .
+  \label{eq:growth}
+\end{equation}
+The $n$-independence is a consistency check rather than a result: until the
+light cone reaches the boundary the chain cannot know its own length.
+Eq.~\eqref{eq:chiS} follows from the ratio of the two slopes.
+
+\begin{table}[htbp]
+\centering
+\caption{\textbf{Measured} (not extrapolated) closed-system requirements at
+saturation. Every $\chreq$ is capped by our own $\chi_{\max}$ and is therefore a
+lower bound. Memory assumes a dense MPDO, $n\cdot4\cdot\chi^2\cdot16$ bytes.}
+\label{tab:measured}
+\begin{tabular}{lccc}
+\toprule
+$n$ & $\Sop$ at saturation [bits] & $\chreq\ \ge$ & MPDO memory $\ge$ \\
+\midrule
+12 & 5.6 & 1\,940 & 3 GB \\
+16 & 7.2 & 18\,936 & 367 GB \\
+20 & 8.5 & 44\,881 & 2.6 TB \\
+24 & 10.0 & 62\,256 & 6.0 TB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Extrapolation to hardware sizes}
+
+Along the operating line $\gamma^\ast=1.4/n$, $t^\ast=0.45n$, combining
+Eqs.~\eqref{eq:growth} and \eqref{eq:chiS}:
+
+\begin{table}[htbp]
+\centering
+\caption{Extrapolated requirement at the barrier peak along the operating line.
+Feasible today is roughly $\chi\sim10^4$--$10^5$.}
+\label{tab:extrap}
+\begin{tabular}{lccccc}
+\toprule
+$n$ & $\gamma^\ast$ & $t^\ast$ & $\Sop$ [bits] & $\chreq$ & MPDO memory \\
+\midrule
+16  & 0.088 & 7.2  & 10.0 & $2^{19}$  & $10^{14}$ B \\
+20  & 0.070 & 9.0  & 12.5 & $2^{23}$  & $10^{17}$ B \\
+24  & 0.058 & 10.8 & 15.0 & $2^{27}$  & $10^{19}$ B \\
+30  & 0.047 & 13.5 & 18.8 & $2^{33}$  & $10^{23}$ B \\
+50  & 0.028 & 22.5 & 31.3 & $2^{53}$  & $10^{36}$ B \\
+100 & 0.014 & 45.0 & 62.6 & $2^{104}$ & $10^{66}$ B \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The extrapolation is fitted on $t\lesssim4$ and read out at $t\approx10$--$22$,
+so it should be treated as an upper envelope; growth bends over as the light
+cone reaches the boundary, which at $n=50$ happens near $t\approx25$, just past
+$t^\ast=22.5$. Even halving the exponent, however, leaves $n=24$ out of reach.
+The measured lower bounds in Table~\ref{tab:measured} make the same point
+without any extrapolation at all.
+
+%======================================================================
+\section{Where our initial expectations were wrong}
+\label{sec:wrong}
+
+Recorded explicitly, because two of these cost real compute time.
+
+\begin{table}[htbp]
+\centering
+\caption{Corrections log.}
+\begin{tabular}{p{0.30\textwidth}p{0.30\textwidth}p{0.32\textwidth}}
+\toprule
+\textbf{Expected} & \textbf{Measured} & \textbf{Consequence} \\
+\midrule
+Barrier peaks at $t\sim1/\gamma$; the hard regime is late times.
+& Peak at $t^\ast\approx0.45n$, set by system size. At $\gamma=0.01,n=8$: peak at $t=4$, $1/\gamma=100$.
+& First sweep integrated to $t=200$ for a peak at $t=4$; $\sim$95\% of walltime wasted, jobs died before large $n$. \\
+\addlinespace
+Small $\gamma$ is the hard regime.
+& $\gamma$ only ever \emph{reduces} hardness. $\gamma=0.02$ and $0.05$ give identical peaks below saturation.
+& ``Dissipation matters'' and ``classically hard'' are in tension; the useful region is the boundary $\gamma\approx1.4/n$. \\
+\addlinespace
+$\chi_{\max}=256$ ample, since $\Sop$ converged at $\chi=64$.
+& That was measured at $\gamma=0.2$, the easy corner. At $\gamma=0.02,n=20$ the trace falls to $0.644$.
+& $\gamma\le0.05$, $n\ge16$ data is corrupt near the peak; only $\gamma=0.10$ is fully trustworthy. \\
+\addlinespace
+The order-2 splitting is second order.
+& $p_{\mathrm{eff}}\approx1.5$, with the error changing sign (Table~\ref{tab:order}).
+& Switched to a palindromic splitting; possible knock-on for MPF work. \\
+\addlinespace
+Closed baseline can be run in Liouville space.
+& $\mathrm{Tr}\rho^2$ reached 24.2 at $n=20$.
+& Rewritten as a pure-state calculation with exact operator-space reconstruction, Eq.~\eqref{eq:pureop}. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%======================================================================
+\section{Recommended operating points}
+\label{sec:operating}
+
+\begin{keybox}
+The operating line is
+\[
+  \gamma^\ast \approx \frac{1.4}{n}, \qquad t^\ast \approx 0.45\,n .
+\]
+\textbf{$n=24$:} $\gamma\approx0.058$, $t\approx11$. Already beyond single-node
+MPDO by the measured bounds of Table~\ref{tab:measured}.\\
+\textbf{$n=50$:} $\gamma\approx0.028$, $t\approx22$. Extrapolated
+$\chreq\sim10^{16}$.
+\end{keybox}
+
+Three points deserve emphasis for whoever configures the hardware run.
+
+\begin{enumerate}[leftmargin=1.5em,itemsep=3pt]
+\item \textbf{$\gamma$ must scale with $n$.} Running $n>50$ at $\gamma=0.05$
+  would place the experiment \emph{above} the saturation line
+  ($\nsat(0.05)\approx28$), in the area-law region where a classical MPDO
+  handles any system size at fixed cost. Larger $n$ at fixed $\gamma$ is not
+  automatically harder; past $\nsat$ it is not harder at all.
+\item \textbf{$t\approx0.45n$, not the few Trotter steps used previously.}
+  Earlier project runs used $t=3$, which at any of these $n$ is on the rising
+  edge, far short of the peak.
+\item \textbf{Our $dt=0.05$ is a convergence choice, not a hardware choice.} It
+  makes the classical run a faithful integrator of Eq.~\eqref{eq:lindblad}. The
+  hardware will run a Trotterised circuit at whatever step the gate budget
+  allows, which is a genuinely different map with its own entanglement growth.
+  If the claim is to be ``no classical method could match my circuit'', the
+  classical baseline must be rerun at the hardware's Trotter step.
+\end{enumerate}
+
+%======================================================================
+\section{What this does \emph{not} establish}
+\label{sec:limits}
+
+\begin{warnbox}
+\textbf{This study bounds one classical method.} Everything above concerns the
+vectorised MPDO/TEBD route. The standard alternative for open systems ---
+stochastic unravelling into quantum trajectories, i.e.\ pure-state MPS at local
+dimension 2 averaged over realisations --- is completely untested here.
+Ref.~\cite{preisser2023comparing} found that trajectory entanglement and
+operator entanglement behave differently, and can move in opposite directions as
+parameters vary. A regime where the MPDO route needs $\chi=10^6$ may be one
+where a few thousand trajectories at $\chi=200$ reproduce $\langle Z_j\rangle$ to
+within shot noise. Since the hardware experiment will be judged on observables,
+not on $\rho$, that is the comparison that decides the claim.
+\end{warnbox}
+
+Secondary limitations:
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+\item The growth laws Eq.~\eqref{eq:growth} are fitted on 3--4 points per $n$ in
+  the window $t\lesssim4$. The per-$n$ consistency is reassuring but the fit
+  deserves a dedicated large-$\chi_{\max}$ closed-system run.
+\item $\nsat=1.4/\gamma$ is calibrated on two saturating rates ($0.10$ and
+  $0.20$). A third, at $\gamma\approx0.07$ with $n$ up to 24, would test it.
+\item $\chreq$ is not converged anywhere except $n=8$. All larger-$n$ values are
+  censored lower bounds.
+\item All runs use a uniform $J$. The disorder-averaged behaviour of the
+  original $\mathcal{U}[1/4,3/4]$ model has not been checked.
+\end{itemize}
+
+\paragraph{Suggested next steps, in priority order.}
+(1)~A trajectory-entanglement study --- the missing half, and cheap, since it
+works with pure states.
+(2)~A closed-system-only run at large $\chi_{\max}$ for $n=24$--$30$ to pin
+Eq.~\eqref{eq:growth} out to $t\approx12$ instead of $t\approx4$.
+(3)~A $\chi_{\max}$ ladder at $n=16$, $\gamma=0.05$ to quantify how much the
+$\chi_{\max}=256$ truncation actually cost at the peak.
+(4)~No further runs at $\gamma=0.02$.
+
+%======================================================================
+\begin{thebibliography}{9}
+\small
+\bibitem{preisser2023comparing}
+G.~Preisser, D.~Wellnitz, T.~Botzung and J.~Schachenmayer,
+\emph{Comparing bipartite entropy growth in open-system matrix-product
+simulation methods}, arXiv:2303.09426; Phys.\ Rev.\ A \textbf{108}, 042605 (2023).
+
+\bibitem{noh2020efficient}
+K.~Noh, L.~Jiang and B.~Fefferman,
+\emph{Efficient classical simulation of noisy random quantum circuits in one
+dimension}, Quantum \textbf{4}, 318 (2020).
+
+\bibitem{vilchez2025direct}
+E.~Vilchez-Estevez, Y.~Yosifov and Z.~Sun,
+\emph{Direct probing of the simulation complexity of open quantum many-body
+dynamics}, arXiv:2508.19959 (2025).
+
+\bibitem{prosen2007integrability}
+T.~Prosen and M.~\v{Z}nidari\v{c},
+\emph{Is the efficiency of classical simulations of quantum dynamics related to
+integrability?}, Phys.\ Rev.\ E \textbf{75}, 015202(R) (2007).
+
+\bibitem{azad2023phase}
+U.~Azad, A.~Hallam, J.~Morley and A.~G.~Green,
+\emph{Phase transitions in the classical simulability of open quantum systems},
+Sci.\ Rep.\ \textbf{13}, 8866 (2023).
+
+\bibitem{fefferman2024nonunital}
+B.~Fefferman, S.~Ghosh, M.~Gullans, K.~Kuroiwa and K.~Sharma,
+\emph{Effect of non-unital noise on random-circuit sampling},
+PRX Quantum \textbf{5}, 030317 (2024).
+\end{thebibliography}
+
+\end{document}
