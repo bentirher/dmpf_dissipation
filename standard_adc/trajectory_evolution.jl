@@ -364,10 +364,12 @@ function run_trajectories(n::Int, J, gamma, times::Vector{Float64}, Ntraj::Int;
     gv = gamma isa Number ? fill(Float64(gamma), n) : collect(Float64.(gamma))
 
     all_runs = Vector{Vector{NamedTuple}}(undef, Ntraj)
+    walltime = zeros(Ntraj)          # seconds per trajectory
     Threads.@threads for k in 1:Ntraj
-        all_runs[k] = single_trajectory(n, Jv, gv, times; dt=dt, cutoff=cutoff,
-                                        maxdim=maxdim, seed=seed0+k, tols=tols,
-                                        initial=initial)
+        walltime[k] = @elapsed all_runs[k] =
+            single_trajectory(n, Jv, gv, times; dt=dt, cutoff=cutoff,
+                              maxdim=maxdim, seed=seed0+k, tols=tols,
+                              initial=initial)
         if verbose && Threads.threadid() == 1 && k % max(1, Ntraj÷10) == 0
             @printf("  ... %d/%d trajectories\n", k, Ntraj); flush(stdout)
         end
@@ -383,25 +385,42 @@ function run_trajectories(n::Int, J, gamma, times::Vector{Float64}, Ntraj::Int;
         ldm = [r[i].linkdim for r in all_runs]
         zmid = [real(r[i].z[max(1,n÷2)]) for r in all_runs]
         zbar = mean(zmid); zsem = Ntraj > 1 ? std(zmid)/sqrt(Ntraj) : 0.0
+        cmf   = float.(cm)
+        chisd = Ntraj > 1 ? std(cmf) : 0.0
         push!(out, (t=t,
             S_mid_mean=mean(Sm), S_mid_max=maximum(Sm),
             S_max_mean=mean(Smx), S_max_p95=quantile(Smx, 0.95),
-            chi_mean=mean(cm), chi_p95=quantile(cm, 0.95), chi_max=maximum(cm),
+            chi_mean=mean(cmf),
+            # Spread across trajectories, and hence a real error bar on the mean.
+            # Its absence is why the n=24 point had to have its uncertainty
+            # reverse-engineered from a lognormal fit to (mean, p95).
+            chi_std=chisd, chi_sem = Ntraj > 1 ? chisd/sqrt(Ntraj) : 0.0,
+            # THE COST MOMENT. An ensemble costs sum_k chi_k^3 = N*<chi^3>, NOT
+            # N*<chi>^3. For the measured spread (CV ~ 0.66) those differ by
+            # ~3x, which shifts the crossover by about -1.7 qubits. Reported
+            # separately because <chi^3> is a third moment and therefore noisy:
+            # its relative error is ~125% at Ntraj=16 and ~31% at Ntraj=256.
+            # Use it only where Ntraj is large; otherwise fall back on the
+            # measured wall time below, which has no moment problem at all.
+            chi3_mean=mean(cmf.^3),
+            chi_p95=quantile(cmf, 0.95), chi_max=maximum(cmf),
             linkdim_mean=mean(ldm), linkdim_max=maximum(ldm),
             z_mid=zbar, z_sem=zsem, z_var=var(zmid),
             saturated = maximum(ldm) >= maxdim))
     end
 
     if verbose
-        println("\n      t | <S_traj>  S_p95 | <chi>  chi_p95  chi_max | <Z_mid>±sem | sat")
+        @printf("\n  wall time per trajectory: mean %.1f s, max %.1f s, total %.1f core-h\n",
+                mean(walltime), maximum(walltime), sum(walltime)/3600)
+        println("\n      t | <S_traj>  S_p95 | <chi>±sem  chi_p95  chi_max | <Z_mid>±sem | sat")
         println("-"^82)
         for r in out
-            @printf("%7.3f | %8.3f %6.3f | %5.0f %8.0f %8d | %+.4f±%.4f | %s\n",
-                    r.t, r.S_max_mean, r.S_max_p95, r.chi_mean, r.chi_p95,
-                    r.chi_max, r.z_mid, r.z_sem, r.saturated ? "!" : " ")
+            @printf("%7.3f | %8.3f %6.3f | %6.0f±%-4.0f %7.0f %8.0f | %+.4f±%.4f | %s\n",
+                    r.t, r.S_max_mean, r.S_max_p95, r.chi_mean, r.chi_sem,
+                    r.chi_p95, r.chi_max, r.z_mid, r.z_sem, r.saturated ? "!" : " ")
         end
     end
-    return out
+    return (series=out, walltime=walltime)
 end
 
 """
@@ -414,21 +433,44 @@ Ntraj_for(res, target_sem::Float64) =
     ceil(Int, maximum(r.z_var for r in res) / target_sem^2)
 
 """
-    cost_comparison(res, chi_mpdo, target_sem)
+    cost_comparison(res, chi_mpdo, target_sem; Ntraj_run)
 
-Prints the head-to-head. This is the number the hardness claim rests on.
+Head-to-head. Two trajectory cost estimates are printed, because they answer
+slightly different questions and disagree by a factor of a few:
+
+  N * <chi>^3    what the previous version reported. WRONG as a cost: an
+                 ensemble costs sum_k chi_k^3, and Jensen makes that larger.
+  N * <chi^3>    the correct cost. Larger by exp(3 sigma^2) ~ 3x at the
+                 measured spread, which moves the crossover ~1.7 qubits earlier.
+
+<chi^3> is a third moment, so it is noisy: relative error ~125% at Ntraj=16 and
+~31% at Ntraj=256. The printed inflation factor <chi^3>/<chi>^3 is the thing to
+sanity-check -- if it swings wildly between system sizes, Ntraj was too small
+and the N*<chi>^3 figure is the more stable (if optimistic) one to quote.
 """
-function cost_comparison(res, chi_mpdo::Real, target_sem::Float64=0.01)
+function cost_comparison(res, chi_mpdo::Real, target_sem::Float64=0.01;
+                         Ntraj_run::Int=0)
     N = Ntraj_for(res, target_sem)
-    chi_t = maximum(r.chi_p95 for r in res)
-    traj = N * chi_t^3
+    i = argmax([r.chi_mean for r in res])
+    cm, c3 = res[i].chi_mean, res[i].chi3_mean
+    infl = cm > 0 ? c3/cm^3 : NaN
+    traj_naive = N * cm^3
+    traj_true  = N * c3
     mpdo = float(chi_mpdo)^3
     @printf("\n=== cost comparison (target SEM on <Z> = %.3f) ===\n", target_sem)
-    @printf("  trajectories : N = %d, chi_p95 = %.0f  ->  N*chi^3 = %.3e\n", N, chi_t, traj)
-    @printf("  MPDO         : chi = %.0f            ->    chi^3 = %.3e\n", float(chi_mpdo), mpdo)
-    @printf("  trajectory advantage: %.3e\n", mpdo/traj)
-    println(mpdo/traj > 1 ?
+    @printf("  at the chi peak, t = %.3f\n", res[i].t)
+    @printf("  chi_mean = %.1f +/- %.1f   chi_p95 = %.0f   chi_max = %.0f\n",
+            cm, res[i].chi_sem, res[i].chi_p95, res[i].chi_max)
+    @printf("  <chi^3>/<chi>^3 = %.2f  %s\n", infl,
+            Ntraj_run in 1:63 ? "(Ntraj small -- treat this factor as indicative)" : "")
+    @printf("  trajectories : N = %d\n", N)
+    @printf("      N*<chi>^3  = %.3e   (optimistic)\n", traj_naive)
+    @printf("      N*<chi^3>  = %.3e   (correct cost)\n", traj_true)
+    @printf("  MPDO         : chi = %.3e  ->  chi^3 = %.3e\n", float(chi_mpdo), mpdo)
+    @printf("  trajectory advantage: %.3e  (naive %.3e)\n", mpdo/traj_true, mpdo/traj_naive)
+    println(mpdo/traj_true > 1 ?
         "  => trajectories WIN. The MPDO bound alone does not establish hardness here." :
         "  => MPDO is cheaper here; the trajectory route is not the binding constraint.")
-    return (Ntraj=N, chi_traj=chi_t, ratio=mpdo/traj)
+    return (Ntraj=N, chi_mean=cm, chi_sem=res[i].chi_sem, chi3=c3,
+            inflation=infl, ratio=mpdo/traj_true, ratio_naive=mpdo/traj_naive)
 end

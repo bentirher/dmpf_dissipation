@@ -64,30 +64,42 @@ open(joinpath(outdir,"manifest.csv"),"w") do io
     end
 end
 
-res = run_trajectories(n, jcoup, gamma, times, Ntraj;
+out = run_trajectories(n, jcoup, gamma, times, Ntraj;
                        dt=dt, cutoff=cutoff, maxdim=maxdim, seed0=seed0,
                        tols=[1e-6], initial=:neel, verbose=true)
+res, walltime = out.series, out.walltime
 
 f = joinpath(outdir, "trajectory_n$(n)$(sfx).csv")
 open(f,"w") do io
     println(io, "n,gamma,Ntraj,maxdim,dt,t,S_mid_mean,S_max_mean,S_max_p95," *
-                "chi_mean,chi_p95,chi_max,linkdim_max,z_mid,z_sem,z_var,saturated")
+                "chi_mean,chi_std,chi_sem,chi3_mean,chi_p95,chi_max," *
+                "linkdim_max,z_mid,z_sem,z_var,saturated")
     for r in res
         println(io, join([n,gamma,Ntraj,maxdim,dt,
             @sprintf("%.6f",r.t), @sprintf("%.8f",r.S_mid_mean),
             @sprintf("%.8f",r.S_max_mean), @sprintf("%.8f",r.S_max_p95),
-            @sprintf("%.2f",r.chi_mean), @sprintf("%.2f",r.chi_p95), r.chi_max,
+            @sprintf("%.3f",r.chi_mean), @sprintf("%.3f",r.chi_std),
+            @sprintf("%.3f",r.chi_sem), @sprintf("%.6e",r.chi3_mean),
+            @sprintf("%.2f",r.chi_p95), @sprintf("%.2f",r.chi_max),
             r.linkdim_max, @sprintf("%.8f",r.z_mid), @sprintf("%.8f",r.z_sem),
             @sprintf("%.8e",r.z_var), r.saturated], ","))
     end
 end
 @printf("\nwrote %s\n", f)
 
-cmp = cost_comparison(res, chi_mpdo, target)
+cmp = cost_comparison(res, chi_mpdo, target; Ntraj_run=Ntraj)
 open(joinpath(outdir,"cost_comparison$(sfx).csv"),"w") do io
-    println(io,"n,gamma,target_sem,Ntraj_needed,chi_traj_p95,chi_mpdo,advantage")
-    println(io, join([n,gamma,target,cmp.Ntraj,@sprintf("%.1f",cmp.chi_traj),
-                      @sprintf("%.4e",chi_mpdo), @sprintf("%.4e",cmp.ratio)],","))
+    println(io,"n,gamma,Ntraj_run,target_sem,Ntraj_needed,chi_mean,chi_sem," *
+               "chi3_mean,inflation,chi_mpdo,advantage,advantage_naive," *
+               "walltime_mean_s,walltime_max_s,walltime_total_coreh")
+    println(io, join([n,gamma,Ntraj,target,cmp.Ntraj,
+                      @sprintf("%.3f",cmp.chi_mean), @sprintf("%.3f",cmp.chi_sem),
+                      @sprintf("%.6e",cmp.chi3), @sprintf("%.3f",cmp.inflation),
+                      @sprintf("%.4e",chi_mpdo), @sprintf("%.4e",cmp.ratio),
+                      @sprintf("%.4e",cmp.ratio_naive),
+                      @sprintf("%.2f",sum(walltime)/length(walltime)),
+                      @sprintf("%.2f",maximum(walltime)),
+                      @sprintf("%.4f",sum(walltime)/3600)],","))
 end
 
 if any(r.saturated for r in res)
