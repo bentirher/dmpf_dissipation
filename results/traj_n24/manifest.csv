@@ -1,0 +1,16 @@
+key,value
+n,24
+gamma,0.0583
+tmax,12.0
+nt,12
+dt,0.05
+Ntraj,16
+maxdim,1024
+cutoff,1.0e-10
+jcoup,0.5
+seed0,1000
+target_sem,0.01
+chi_mpdo,1.34217728e8
+threads,16
+host,hyperion-011
+started,2026-09-09T13:11:54.477
