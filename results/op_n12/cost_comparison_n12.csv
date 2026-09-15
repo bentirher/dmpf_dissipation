@@ -1,0 +1,2 @@
+n,gamma,Ntraj_run,target_sem,Ntraj_needed,chi_mean,chi_sem,chi3_mean,inflation,chi_mpdo,advantage,advantage_naive,walltime_mean_s,walltime_max_s,walltime_total_coreh
+12,0.116667,256,0.01,994,20.777,0.711,1.795747e+04,2.002,6.5000e+03,1.5385e+04,3.0802e+04,52.75,124.02,3.7513
