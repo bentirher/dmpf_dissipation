@@ -150,15 +150,14 @@ function circuit_mpdo(n::Int, theta::Float64, p::Float64, k::Int;
 end
 
 """
-    mpdo_expectation_Z(n, theta, p, k; ...) -> <Z_j> after k steps
+    mpdo_run(n, theta, p, k; ...) -> (rho, lsites)
 
-Convenience for validating against Qiskit. Your notebook plots
-<(I - Z_0)/2>, the excited-state population of qubit 0, which is
-(1 - <Z_1>)/2 in 1-indexed Julia terms.
+Applies the k-step circuit and returns the final vectorised state. Shared by the
+observable and sweep helpers so a circuit is never run more than once per point.
 """
-function mpdo_expectation_Z(n::Int, theta::Float64, p::Float64, k::Int, site::Int;
-                            cutoff::Float64=1e-12, maxdim::Int=1024,
-                            excited=:neel, dissipation::Bool=true)
+function mpdo_run(n::Int, theta::Float64, p::Float64, k::Int;
+                  cutoff::Float64=1e-12, maxdim::Int=1024,
+                  excited=:neel, dissipation::Bool=true)
     lsites = liouville_siteinds(n)
     exc = excited === :neel ? collect(1:2:n) :
           excited === :single ? [1] : collect(Int.(excited))
@@ -173,9 +172,82 @@ function mpdo_expectation_Z(n::Int, theta::Float64, p::Float64, k::Int, site::In
         !isempty(even) && (rho = apply(even, rho; cutoff=cutoff, maxdim=maxdim))
         !isempty(damp) && (rho = apply(damp, rho; cutoff=cutoff, maxdim=maxdim))
     end
-    idm = identity_vectorized_mps(lsites)
-    zm  = pauli_z_vectorized_mps(lsites, site)
-    return real(inner(zm, rho) / inner(idm, rho))
+    return rho, lsites
+end
+
+"""
+    mpdo_expectation_Z_all(n, theta, p, k; ...) -> Vector of <Z_j>, all sites
+
+One circuit run, every site. Calling the single-site version in a loop reruns
+the whole circuit n times for data that is already there.
+"""
+function mpdo_expectation_Z_all(n::Int, theta::Float64, p::Float64, k::Int;
+                                cutoff::Float64=1e-12, maxdim::Int=1024,
+                                excited=:neel, dissipation::Bool=true)
+    rho, lsites = mpdo_run(n, theta, p, k; cutoff=cutoff, maxdim=maxdim,
+                           excited=excited, dissipation=dissipation)
+    tr = inner(identity_vectorized_mps(lsites), rho)
+    return [real(inner(pauli_z_vectorized_mps(lsites, j), rho) / tr) for j in 1:n]
+end
+
+"""
+    mpdo_expectation_Z(n, theta, p, k, site; ...) -> <Z_site> after k steps
+
+Your notebook plots <(I - Z_0)/2>, the excited population of qubit 0, which is
+(1 - <Z_1>)/2 in 1-indexed Julia terms.
+"""
+mpdo_expectation_Z(n::Int, theta::Float64, p::Float64, k::Int, site::Int; kw...) =
+    mpdo_expectation_Z_all(n, theta, p, k; kw...)[site]
+
+
+# =============================================================================
+# STEP 2 helpers: hardness and faithfulness as functions of the gate angle
+# =============================================================================
+
+"""
+    circuit_cost_point(n, theta, p, k; ...)
+
+MPDO cost of ONE circuit: operator entanglement and required bond dimension
+after the final Trotter step, plus the per-step trace as a truncation check.
+"""
+function circuit_cost_point(n::Int, theta::Float64, p::Float64, k::Int;
+                            cutoff::Float64=1e-12, maxdim::Int=1024,
+                            excited=:neel, tols::Vector{Float64}=[1e-6,1e-10])
+    rec = circuit_mpdo(n, theta, p, k; cutoff=cutoff, maxdim=maxdim,
+                       excited=excited, tols=tols, verbose=false)
+    fin = rec[end]
+    return (S_op=fin.S_op_max, chi=fin.chi_max, linkdim=fin.linkdim,
+            trace=real(fin.trace), saturated=fin.saturated,
+            S_path=[r.S_op_max for r in rec], chi_path=[r.chi_max for r in rec])
+end
+
+"""
+    trotter_infidelity(n, theta, p, k; k_ref, ...)
+
+How far the k-step circuit is from the CONTINUOUS-TIME master equation it
+nominally approximates, measured as max_j |<Z_j>_circuit - <Z_j>_exact|.
+
+The reference is the same physical evolution resolved with `k_ref` steps
+instead of k. Holding the physics fixed while changing k means holding
+(J*t, gamma*t) fixed, i.e.
+
+    theta_ref = theta * k / k_ref      since theta = 2*J*t/k
+    p_ref     = 1 - (1-p)^(k/k_ref)    since (1-p)^k = exp(-gamma*t)
+
+so no separate J or gamma is needed -- the circuit parameters alone determine
+the master equation they are a discretisation of.
+
+This is the axis to put hardness against. Both grow with theta, so there is a
+real trade-off and it should be shown rather than asserted.
+"""
+function trotter_infidelity(n::Int, theta::Float64, p::Float64, k::Int;
+                            k_ref::Int=1000, cutoff::Float64=1e-12,
+                            maxdim::Int=1024, excited=:neel)
+    z  = mpdo_expectation_Z_all(n, theta, p, k; cutoff=cutoff, maxdim=maxdim,
+                                excited=excited)
+    zr = mpdo_expectation_Z_all(n, theta*k/k_ref, 1-(1-p)^(k/k_ref), k_ref;
+                                cutoff=cutoff, maxdim=maxdim, excited=excited)
+    return maximum(abs.(z .- zr)), z, zr
 end
 
 
