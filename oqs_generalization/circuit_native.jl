@@ -238,7 +238,16 @@ function circuit_trajectory_ensemble(n::Int, theta::Float64, p::Float64, k::Int,
                                      Ntraj::Int; cutoff::Float64=1e-10,
                                      maxdim::Int=1024, excited=:neel,
                                      seed0::Int=1000, dissipation::Bool=true,
+                                     site::Int=max(1, n ÷ 2),
                                      verbose::Bool=true)
+    # `site` is which qubit <Z> is reported for, and it defaults to the MIDDLE
+    # site because that is what the earlier (Neel-initialised) study wanted.
+    # That default silently broke the first circuit validation: the driver
+    # compared this against the MPDO at site 1 with only q0 excited, and the two
+    # sites have completely different curves -- 150 sigma of apparent
+    # disagreement from a pure bookkeeping mismatch. The full per-site vector is
+    # now returned as `z_all` so the comparison can never be ambiguous again.
+    @assert 1 <= site <= n "site must lie in 1:$n, got $site"
     runs = Vector{Vector{NamedTuple}}(undef, Ntraj); wall = zeros(Ntraj)
     Threads.@threads for i in 1:Ntraj
         wall[i] = @elapsed runs[i] =
@@ -250,20 +259,25 @@ function circuit_trajectory_ensemble(n::Int, theta::Float64, p::Float64, k::Int,
     for s in 1:(k+1)
         S  = [r[s].S_max for r in runs]
         c  = float.([r[s].chi_max[1] for r in runs])
-        z  = [real(r[s].z[max(1,n÷2)]) for r in runs]
+        z  = [real(r[s].z[site]) for r in runs]
+        zall = [mean(real(r[s].z[j]) for r in runs) for j in 1:n]
+        zallsem = [Ntraj > 1 ? std([real(r[s].z[j]) for r in runs])/sqrt(Ntraj) : 0.0
+                   for j in 1:n]
         sd = Ntraj > 1 ? std(c) : 0.0
         push!(out, (step=s-1, S_mean=mean(S), S_p95=quantile(S,0.95),
                     chi_mean=mean(c), chi_std=sd,
                     chi_sem = Ntraj>1 ? sd/sqrt(Ntraj) : 0.0,
                     chi3_mean=mean(c.^3), chi_p95=quantile(c,0.95), chi_max=maximum(c),
-                    z_mid=mean(z), z_sem = Ntraj>1 ? std(z)/sqrt(Ntraj) : 0.0,
-                    z_var=var(z),
+                    site=site, z_mid=mean(z),
+                    z_sem = Ntraj>1 ? std(z)/sqrt(Ntraj) : 0.0,
+                    z_var=var(z), z_all=zall, z_all_sem=zallsem,
                     saturated=maximum(float.([r[s].linkdim for r in runs])) >= maxdim))
     end
     if verbose
         @printf("\nTRAJ  n=%d theta=%.4f p=%.4f k=%d Ntraj=%d | wall %.1f s/traj, %.2f core-h\n",
                 n, theta, p, k, Ntraj, mean(wall), sum(wall)/3600)
-        println(" step |  <S>   S_p95 |  <chi>±sem  chi_p95  chi_max | <Z_mid>±sem | sat")
+        @printf(" <Z> reported for SITE %d of %d\n", site, n)
+        println(" step |  <S>   S_p95 |  <chi>±sem  chi_p95  chi_max | <Z_site>±sem | sat")
         for r in out
             @printf("%5d | %6.3f %6.3f | %7.1f±%-5.1f %7.0f %8.0f | %+.4f±%.4f | %s\n",
                 r.step, r.S_mean, r.S_p95, r.chi_mean, r.chi_sem, r.chi_p95,

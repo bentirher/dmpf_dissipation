@@ -58,19 +58,46 @@ println("="^78)
 println("CHECK B -- trajectories vs MPDO at the same circuit (k=8, a few times)")
 println("="^78)
 @printf("Ntraj=%d\n\n", NTRAJ)
-println("      t |   pop MPDO    pop traj ± sem   diff    n_sigma")
-k = 8
-for t in [5.0, 10.0, 15.0, 20.0, 25.0]
-    th = theta_of(JJ, t, k); pp = p_of(GAMMA, t, k)
-    zm = mpdo_expectation_Z(N, th, pp, k, 1; excited=EXC, maxdim=256)
-    ens = circuit_trajectory_ensemble(N, th, pp, k, NTRAJ;
-                                      excited=EXC, maxdim=64, verbose=false)
-    last = ens.series[end]
-    pm, pt = (1-zm)/2, (1-last.z_mid)/2
-    sem = last.z_sem/2
-    ns  = sem > 0 ? (pt-pm)/sem : 0.0
-    @printf("%7.2f | %10.6f   %8.6f±%.4f  %+.2e  %+6.2f\n", t, pm, pt, sem, pt-pm, ns)
+# EVERY site is compared, not just one. The first version of this check asked
+# the MPDO for site 1 and the trajectory ensemble for its default (the middle
+# site, = 2 at n=4) and reported 150 sigma of disagreement that was purely a
+# bookkeeping mismatch -- both methods were correct. An exact dense n=4
+# calculation confirmed MPDO reproduces site 0 to six decimals and the
+# trajectories reproduce site 1 to within Monte Carlo error. Comparing the whole
+# vector makes that failure mode impossible and costs nothing.
+#
+# Wrapped in a function on purpose: an accumulator assigned inside a top-level
+# `for` loop in a Julia SCRIPT silently becomes a new local and throws
+# UndefVarError. That has already broken two files in this project.
+function check_B(k::Int, ts::Vector{Float64})
+    worst = 0.0
+    for t in ts
+        th = theta_of(JJ, t, k); pp = p_of(GAMMA, t, k)
+        @printf("\n  t = %.2f  (theta=%.4f, p=%.4f)\n", t, th, pp)
+        println("   site |   pop MPDO     pop traj +/- sem   diff     n_sigma")
+        # ONE ensemble per time, then read every site off z_all. Calling the
+        # ensemble once per site would re-run all NTRAJ trajectories N times
+        # over for data that is already in the same run.
+        ej = circuit_trajectory_ensemble(N, th, pp, k, NTRAJ; excited=EXC,
+                                         maxdim=64, seed0=1000,
+                                         verbose=false).series[end]
+        for j in 1:N
+            zm = mpdo_expectation_Z(N, th, pp, k, j; excited=EXC, maxdim=256)
+            pm, pt = (1-zm)/2, (1-ej.z_all[j])/2
+            sem = max(ej.z_all_sem[j]/2, 1e-12)
+            ns = (pt-pm)/sem
+            worst = max(worst, abs(ns))
+            @printf("   %4d | %10.6f   %9.6f±%.4f  %+.2e  %+7.2f\n",
+                    j, pm, pt, sem, pt-pm, ns)
+        end
+    end
+    @printf("\n  worst |n_sigma| over all sites and times = %.2f   %s\n", worst,
+            worst < 4 ? "PASS -- trajectories reproduce the channel" :
+                        "FAIL -- genuine disagreement, not a site mismatch")
+    return worst < 4
 end
+
+check_B(8, [5.0, 10.0, 15.0, 20.0, 25.0])
 
 println()
 println("="^78)
