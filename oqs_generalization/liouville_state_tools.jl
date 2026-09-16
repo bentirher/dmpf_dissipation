@@ -210,6 +210,58 @@ end
 
 
 # -----------------------------------------------------------------------------
+# Tracked evolution by DIRECT GATE APPLICATION (the default)
+# -----------------------------------------------------------------------------
+#
+# Same contract as evolve_tracked, but the per-step gate list is applied
+# straight to the MPS instead of being compressed into a step MPO first.
+#
+# WHY THIS IS THE DEFAULT, NOT THE MPO ROUTE
+# ------------------------------------------
+# The step-MPO route pays a compression cost that grows with the DEPTH of the
+# product formula, and for a deep formula that cost is not just time -- it is
+# accuracy. Concretely, at n=6 the middle cut is bond 3, an ODD bond, so only
+# the odd layers cross it:
+#
+#     strang:2   2 odd half-layers   -> rank <= 16^2  = 256   (matches the
+#                                                              measured chi_S)
+#     strang:4   5 blocks x 2        -> rank <= 16^10, capped by the n=6 MPO
+#                                       ceiling 4096
+#
+# With mpo_maxdim defaulting to 512, the strang:4 step MPO is truncated, and
+# that truncation is the most likely source of the ~5e-6 relative floor seen in
+# the step0 v2 log (strang:4 self-convergence bouncing around 4e-6 to 1e-5 with
+# no trend, and its raw trace wandering over 4.4e-6 with no trend -- the same
+# number).
+#
+# Applying 25 two-site layers to an MPS is both cheaper and more accurate than
+# compressing them into a rank-4096 operator and then applying that. There is no
+# reuse argument either: the step MPO is reused across k0 steps, but a two-site
+# gate list is just as reusable and costs nothing to hold.
+#
+# The gates are applied at the state CEILING, so the application itself is
+# exact and ALL of the loss stays in the subsequent tracked truncation. That
+# keeps eps_chi an honest measurement, which is the whole point of the Step 1
+# x-axis. It also means this does not scale past the n where the ceiling is
+# affordable -- which is fine, because Steps 0 and 1 need an exact reference
+# anyway and so are capped at n <= 10 regardless.
+
+function evolve_tracked_gates(rho0::MPS, gates::Vector{ITensor}, nsteps::Int;
+                              n::Int, maxdim::Int, cutoff::Float64=1e-16)
+    ceil_ = state_max_bond_dim(n)
+    @assert maxdim <= ceil_ "maxdim=$maxdim exceeds the n=$n Liouville MPS ceiling $ceil_"
+
+    psi = deepcopy(rho0)
+    eps_acc = 0.0
+    for _ in 1:nsteps
+        psi = apply(gates, psi; cutoff=cutoff, maxdim=ceil_)
+        eps_acc += truncate_tracked!(psi; maxdim=maxdim, cutoff=cutoff)
+    end
+    return psi, eps_acc
+end
+
+
+# -----------------------------------------------------------------------------
 # One call: rho_k(t) for a given number of Trotter steps
 # -----------------------------------------------------------------------------
 #
@@ -227,22 +279,48 @@ end
 # 1e-4. Dividing it out is strictly an improvement, and the raw trace is
 # returned either way so it can be watched rather than hidden.
 
+# `mode` selects how the per-step propagator is applied:
+#   :gates  (DEFAULT) apply the two-site gate list straight to the MPS. Cheaper
+#           and more accurate for deep formulas; see evolve_tracked_gates.
+#   :mpo    compress the gate list into a step MPO first, as the rest of the
+#           codebase does. Kept so the two can be compared directly, and because
+#           the MOC route needs the MPO anyway.
+# `chi_S` in the returned tuple is the step-MPO bond dimension in :mpo mode and
+# the NUMBER OF GATES in :gates mode -- reported either way so a truncated step
+# operator cannot hide.
+
 function evolve_trotter(n, J, gammas, t::Float64, k::Int, lsites::LiouvilleSites,
                         rho0::MPS; maxdim::Int, order::Int=2, dissipation::Bool=true,
                         cutoff::Float64=1e-16, mpo_maxdim::Int=512,
-                        splitting::Symbol=:project,
+                        splitting::Symbol=:project, mode::Symbol=:gates,
                         renormalize_trace::Bool=true, id_mps::Union{MPS,Nothing}=nothing)
-    S = split_step_MPO(n, J, gammas, t / k, lsites, cutoff,
-                       min(mpo_maxdim, mpo_max_bond_dim(n));
-                       order=order, dissipation=dissipation, splitting=splitting)
-    psi, eps = evolve_tracked(rho0, S, k; n=n, maxdim=maxdim, cutoff=cutoff)
+
+    local psi, eps, chiS, truncated
+    if mode === :gates
+        gates = split_step_gates(n, J, gammas, t / k, lsites;
+                                 order=order, dissipation=dissipation, splitting=splitting)
+        psi, eps = evolve_tracked_gates(rho0, gates, k; n=n, maxdim=maxdim, cutoff=cutoff)
+        chiS, truncated = length(gates), false
+    elseif mode === :mpo
+        cap = min(mpo_maxdim, mpo_max_bond_dim(n))
+        S = split_step_MPO(n, J, gammas, t / k, lsites, cutoff, cap;
+                           order=order, dissipation=dissipation, splitting=splitting)
+        psi, eps = evolve_tracked(rho0, S, k; n=n, maxdim=maxdim, cutoff=cutoff)
+        chiS = maxlinkdim(S)
+        # A step MPO sitting exactly at the cap has been truncated, and that
+        # truncation is a silent systematic on every step of the evolution.
+        truncated = chiS >= cap
+    else
+        error("mode must be :gates or :mpo, got $mode")
+    end
 
     idm = id_mps === nothing ? identity_observable(lsites) : id_mps
     tr = inner(idm, psi)
     if renormalize_trace && abs(tr) > 1e-12
         psi[1] = psi[1] / tr
     end
-    return (rho=psi, eps=eps, chi_S=maxlinkdim(S), chi=maxlinkdim(psi), trace=tr)
+    return (rho=psi, eps=eps, chi_S=chiS, chi=maxlinkdim(psi), trace=tr,
+            step_truncated=truncated, mode=mode)
 end
 
 
