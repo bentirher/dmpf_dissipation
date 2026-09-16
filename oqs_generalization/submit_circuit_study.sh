@@ -1,7 +1,9 @@
 #!/bin/bash
 # The whole hardware-aware study, one driver, selected by MODE.
 #
-#   sbatch --array=0-2,5,6 submit_circuit_study.sh  # STEP 2: theta + fidelity + init state
+#   sbatch --array=0-2,5,6 submit_circuit_study.sh  # STEP 2: theta + fidelity + init state  [DONE]
+#   sbatch --array=7-9     submit_circuit_study.sh  # STEP 2b: larger n, and fidelity for the chosen init state
+#   sbatch --array=3,4     submit_circuit_study.sh  # STEPS 3-4 at the chosen (theta, init)
 #   sbatch --array=3   submit_circuit_study.sh    # STEP 3: damping sweep
 #   sbatch --array=4   submit_circuit_study.sh    # STEP 4: n scaling
 #
@@ -80,16 +82,41 @@ case $SLURM_ARRAY_TASK_ID in
   2) export MODE=fidelity N=8 MAXDIM=256 KREF=1000
      export OUTDIR=ckt_fidelity TAG=n8 ;;
 
+  # --- STEP 2b: confirm the initial-state gain at larger n, and redo the ----
+  # fidelity curve for the initial state we will actually use.
+  #
+  # STEP 2 RESULT. chi_traj peaks on a broad plateau theta in [0.8, 1.25]:
+  #     n=16 Neel 77 | |+> 170 | random 168        n=24 Neel 243
+  # A non-basis initial state MORE THAN DOUBLES the cost at n=16, for one layer
+  # of single-qubit gates on hardware. theta = pi/2 collapses for every initial
+  # state because RZZ(2*theta) -> RZZ(pi) = -i ZZ is a PAULI there, leaving the
+  # XX+YY part alone -- a free-fermion (matchgate) circuit, classically
+  # simulable in O(n^3) whatever its entanglement. The Schmidt-tail factor
+  # chi/2^S drops to 1.0-2.2 there against 4-10 elsewhere, which is the flat
+  # spectrum such structure produces. Avoid pi/2; theta = 0.95 is the choice.
+  7) export MODE=theta N=24 MAXDIM=256 NTRAJ=64 EXCITED=random
+     export OUTDIR=ckt_theta_n24_rand TAG=n24rand ;;
+  8) export MODE=theta N=24 MAXDIM=256 NTRAJ=64 EXCITED=plus
+     export OUTDIR=ckt_theta_n24_plus TAG=n24plus ;;
+  # The published fidelity curve used Neel; infidelity depends on the initial
+  # state, so it must be remeasured for the one actually used. n=8, exact, cheap.
+  9) export MODE=fidelity N=8 MAXDIM=256 KREF=1000 EXCITED=random
+     export OUTDIR=ckt_fidelity_rand TAG=n8rand ;;
+
   # --- STEP 3: how much damping can the circuit afford? ---------------------
-  # THETA=1.05 is a PLACEHOLDER from the n=8 exploration (3.39 bits from Neel,
-  # non-Clifford, infidelity ~0.15). Replace it with the Step 2 optimum.
-  3) export MODE=damping N=20 THETA=1.05 MAXDIM=256 NTRAJ=128
+  # THETA=0.95 and EXCITED=random come from Step 2: the plateau maximum, away
+  # from the pi/2 free-fermion point, with infidelity ~0.14 (Neel reference;
+  # task 9 remeasures it for :random). :random rather than :plus because at
+  # theta=pi/2 the |+> circuit is Clifford on a stabilizer state, and while 0.95
+  # is not pi/2 it is better not to have a Gottesman-Knill argument anywhere
+  # near the operating point.
+  3) export MODE=damping N=20 THETA=0.95 MAXDIM=256 NTRAJ=128 EXCITED=random
      export PLIST=0.0,0.005,0.01,0.02,0.035,0.05,0.08,0.12,0.18,0.25
      export OUTDIR=ckt_damping TAG=n20 ;;
 
   # --- STEP 4: n scaling at the chosen (theta, p) --------------------------
   # THETA and P must both be replaced with the Step 2 / Step 3 optima first.
-  4) export MODE=scaling NLIST=8,12,16,20,24,28,32 THETA=1.05 MAXDIM=256 NTRAJ=64
+  4) export MODE=scaling NLIST=8,12,16,20,24,28,32 THETA=0.95 MAXDIM=256 NTRAJ=64 EXCITED=random
      export OUTDIR=ckt_scaling TAG=opt ;;
 esac
 
