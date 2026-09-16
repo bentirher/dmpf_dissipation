@@ -1,7 +1,7 @@
 #!/bin/bash
 # The whole hardware-aware study, one driver, selected by MODE.
 #
-#   sbatch --array=0-2 submit_circuit_study.sh    # STEP 2: theta sweep + fidelity
+#   sbatch --array=0-2,5,6 submit_circuit_study.sh  # STEP 2: theta + fidelity + init state
 #   sbatch --array=3   submit_circuit_study.sh    # STEP 3: damping sweep
 #   sbatch --array=4   submit_circuit_study.sh    # STEP 4: n scaling
 #
@@ -25,7 +25,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --time=11:00:00
+#SBATCH --time=06:00:00
 #SBATCH --output=logs/cktstudy_%A_%a.out
 #SBATCH --error=logs/cktstudy_%A_%a.err
 mkdir -p logs
@@ -47,12 +47,31 @@ export JREF=0.25 GREF=0.0625      # only used to print the implied (dt, t)
 
 case $SLURM_ARRAY_TASK_ID in
   # --- STEP 2a: where is the circuit hardest in theta? -----------------------
-  # Two sizes: n=16 to see the shape cheaply, n=24 to check the peak does not
-  # move with system size.
-  0) export MODE=theta N=16 MAXDIM=1024 NTRAJ=128
+  # MAXDIM=256, down from 1024, for three reasons. (i) At 1024 the MPDO
+  # saturated from theta=0.2 onward, so the expensive number was a censored
+  # lower bound anyway. (ii) S_op converges in maxdim far faster than chi does.
+  # (iii) The earlier study already settled that the MPDO loses to trajectories
+  # by 8-13 orders of magnitude, so the informative probe here is chi_traj,
+  # which came in at 11-75 -- nowhere near any cap.
+  # With that plus the bond_report gauge fix and snapshots only at the final
+  # step, each theta point drops from ~2 h to ~1 min.
+  0) export MODE=theta N=16 MAXDIM=256 NTRAJ=128
      export OUTDIR=ckt_theta_n16 TAG=n16 ;;
-  1) export MODE=theta N=24 MAXDIM=1024 NTRAJ=64
+  1) export MODE=theta N=24 MAXDIM=256 NTRAJ=64
      export OUTDIR=ckt_theta_n24 TAG=n24 ;;
+
+  # --- STEP 2c: the initial state is a first-class knob ---------------------
+  # At theta=pi/2 the bond gate is locally iSWAP, a permutation on basis states:
+  # from Neel the circuit stays EXACTLY product (S_op=0, measured exactly at
+  # n=8), from |+>^n it reaches the maximum. One Hadamard layer on hardware.
+  # CAUTION: at theta=pi/2 the gates are Clifford and |+>^n is a stabilizer
+  # state, so that combination is Gottesman-Knill simulable regardless of
+  # entanglement. :random is the non-stabilizer stress test; run all three and
+  # site the operating point away from pi/2.
+  5) export MODE=theta N=16 MAXDIM=256 NTRAJ=128 EXCITED=plus
+     export OUTDIR=ckt_theta_plus TAG=plus ;;
+  6) export MODE=theta N=16 MAXDIM=256 NTRAJ=128 EXCITED=random
+     export OUTDIR=ckt_theta_rand TAG=rand ;;
 
   # --- STEP 2b: where does it stop being the master equation? ---------------
   # n=8 is exact (Liouville ceiling 4^4 = 256) and Trotter error is short
@@ -62,14 +81,15 @@ case $SLURM_ARRAY_TASK_ID in
      export OUTDIR=ckt_fidelity TAG=n8 ;;
 
   # --- STEP 3: how much damping can the circuit afford? ---------------------
-  # THETA below must be updated to the Step 2 optimum before running this.
-  3) export MODE=damping N=20 THETA=1.5708 MAXDIM=1024 NTRAJ=128
+  # THETA=1.05 is a PLACEHOLDER from the n=8 exploration (3.39 bits from Neel,
+  # non-Clifford, infidelity ~0.15). Replace it with the Step 2 optimum.
+  3) export MODE=damping N=20 THETA=1.05 MAXDIM=256 NTRAJ=128
      export PLIST=0.0,0.005,0.01,0.02,0.035,0.05,0.08,0.12,0.18,0.25
      export OUTDIR=ckt_damping TAG=n20 ;;
 
   # --- STEP 4: n scaling at the chosen (theta, p) --------------------------
-  # THETA and P must both be updated from Steps 2 and 3 first.
-  4) export MODE=scaling NLIST=8,12,16,20,24,28,32 THETA=1.5708 MAXDIM=1024 NTRAJ=64
+  # THETA and P must both be replaced with the Step 2 / Step 3 optima first.
+  4) export MODE=scaling NLIST=8,12,16,20,24,28,32 THETA=1.05 MAXDIM=256 NTRAJ=64
      export OUTDIR=ckt_scaling TAG=opt ;;
 esac
 
