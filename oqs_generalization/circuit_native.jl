@@ -61,6 +61,76 @@ end
 
 
 # =============================================================================
+# Initial product states
+# =============================================================================
+#
+# WHY THIS MATTERS MORE THAN IT LOOKS. At theta = pi/2 the bond gate is locally
+# equivalent to iSWAP, which on a COMPUTATIONAL BASIS state is just a
+# permutation with phases (|01> <-> |10>, phases on |00> and |11>). Neel is a
+# basis state, so the circuit shuffles it and the state stays EXACTLY product:
+# measured S_op = 0 at n=8 where the MPDO is exact. From |+>^n the same circuit
+# reaches 4.000 bits at n=8 -- the maximum at the half cut.
+#
+# That integer is a warning, though: at theta = pi/2 the gates RXX(pi/2),
+# RYY(pi/2), RZZ(pi) are all CLIFFORD and |+>^n is a stabilizer state, so the
+# closed circuit is Gottesman-Knill simulable however entangled it looks. Use
+# :plus to understand the structure, not to site a hardness claim.
+#
+#   :neel     |1010...>   basis state, the default
+#   :single   |100...>    matches the notebook validation
+#   :plus     |+++...>    one Hadamard layer on hardware; Clifford at theta=pi/2
+#   :random   Haar-random single-qubit states, seeded; non-stabilizer by
+#             construction, and the honest stress test
+
+"Single-qubit kets for a product initial state, as a length-n vector of 2-vectors."
+function initial_kets(n::Int, spec; seed::Int=20260916)
+    if spec === :neel
+        return [isodd(j) ? ComplexF64[0,1] : ComplexF64[1,0] for j in 1:n]
+    elseif spec === :single
+        return [j == 1 ? ComplexF64[0,1] : ComplexF64[1,0] for j in 1:n]
+    elseif spec === :plus
+        return [ComplexF64[1,1]/sqrt(2) for _ in 1:n]
+    elseif spec === :random
+        rng = MersenneTwister(seed)
+        return [(v = ComplexF64.(randn(rng,2), randn(rng,2)); v/norm(v)) for _ in 1:n]
+    elseif spec isa AbstractVector{<:Integer}
+        return [j in spec ? ComplexF64[0,1] : ComplexF64[1,0] for j in 1:n]
+    end
+    error("initial state must be :neel, :single, :plus, :random or a vector of excited sites")
+end
+
+"|rho(0)>> for an arbitrary product state, as an MPS over the doubled sites."
+function vectorized_product_mps(lsites::LiouvilleSites, kets::Vector{Vector{ComplexF64}})
+    n = lsites.n
+    links = [Index(1, "Link,l=$j") for j in 1:(n-1)]
+    ts = ITensor[]
+    for j in 1:n
+        rho_j = kets[j] * kets[j]'          # |s><s|
+        T = ITensor(Matrix{ComplexF64}(rho_j), lsites.ket[j], lsites.bra[j])
+        j > 1 && (T *= onehot(links[j-1] => 1))
+        j < n && (T *= onehot(links[j]   => 1))
+        push!(ts, T)
+    end
+    return MPS(ts)
+end
+
+"|psi(0)> for an arbitrary product state on the interleaved system/ancilla chain."
+function product_mps_with_ancillas(sites, n::Int, kets::Vector{Vector{ComplexF64}})
+    N = 2n
+    links = [Index(1, "Link,l=$j") for j in 1:(N-1)]
+    ts = ITensor[]
+    for m in 1:N
+        v = isodd(m) ? kets[(m+1)÷2] : ComplexF64[1,0]   # ancillas start in |0>
+        T = ITensor(v, sites[m])
+        m > 1 && (T *= onehot(links[m-1] => 1))
+        m < N && (T *= onehot(links[m]   => 1))
+        push!(ts, T)
+    end
+    return MPS(ts)
+end
+
+
+# =============================================================================
 # Gates, in circuit units
 # =============================================================================
 
@@ -104,11 +174,12 @@ state; `:neel` is available and is the better choice for a hardness study.
 function circuit_mpdo(n::Int, theta::Float64, p::Float64, k::Int;
                       cutoff::Float64=1e-12, maxdim::Int=1024,
                       excited=:neel, tols::Vector{Float64}=[1e-6,1e-10],
-                      dissipation::Bool=true, verbose::Bool=true)
+                      dissipation::Bool=true, snap_every::Int=1,
+                      verbose::Bool=true)
+    # snap_every: bond_report costs a full gauge sweep plus (n-1) SVDs. For a
+    # parameter sweep only the final step is wanted, so pass snap_every=k.
     lsites = liouville_siteinds(n)
-    exc = excited === :neel ? collect(1:2:n) :
-          excited === :single ? [1] : collect(Int.(excited))
-    rho = vectorized_initial_state_mps(lsites, exc)
+    rho = vectorized_product_mps(lsites, initial_kets(n, excited))
     idm = identity_vectorized_mps(lsites)
 
     U = circuit_bond_matrix(theta)
@@ -141,6 +212,7 @@ function circuit_mpdo(n::Int, theta::Float64, p::Float64, k::Int;
         rho = apply(odd,  rho; cutoff=cutoff, maxdim=maxdim)
         !isempty(even) && (rho = apply(even, rho; cutoff=cutoff, maxdim=maxdim))
         !isempty(damp) && (rho = apply(damp, rho; cutoff=cutoff, maxdim=maxdim))
+        (s % snap_every == 0 || s == k) || continue
         r = snap!(s)
         verbose && @printf("%5d | %9.4f %10.4f | %9d | %7d | %8.6f | %s\n",
             s, r.S_op_mid, r.S_op_max, r.chi_max, r.linkdim, real(r.trace),
@@ -159,9 +231,7 @@ function mpdo_run(n::Int, theta::Float64, p::Float64, k::Int;
                   cutoff::Float64=1e-12, maxdim::Int=1024,
                   excited=:neel, dissipation::Bool=true)
     lsites = liouville_siteinds(n)
-    exc = excited === :neel ? collect(1:2:n) :
-          excited === :single ? [1] : collect(Int.(excited))
-    rho = vectorized_initial_state_mps(lsites, exc)
+    rho = vectorized_product_mps(lsites, initial_kets(n, excited))
     U = circuit_bond_matrix(theta)
     odd  = vcat([unitary_channel_gates(U, [j, j+1], lsites) for j in 1:2:n-1]...)
     even = n > 2 ? vcat([unitary_channel_gates(U, [j, j+1], lsites) for j in 2:2:n-1]...) : ITensor[]
@@ -214,7 +284,7 @@ function circuit_cost_point(n::Int, theta::Float64, p::Float64, k::Int;
                             cutoff::Float64=1e-12, maxdim::Int=1024,
                             excited=:neel, tols::Vector{Float64}=[1e-6,1e-10])
     rec = circuit_mpdo(n, theta, p, k; cutoff=cutoff, maxdim=maxdim,
-                       excited=excited, tols=tols, verbose=false)
+                       excited=excited, tols=tols, snap_every=k, verbose=false)
     fin = rec[end]
     return (S_op=fin.S_op_max, chi=fin.chi_max, linkdim=fin.linkdim,
             trace=real(fin.trace), saturated=fin.saturated,
@@ -268,10 +338,7 @@ function circuit_trajectory(n::Int, theta::Float64, p::Float64, k::Int;
                             dissipation::Bool=true)
     rng = MersenneTwister(seed)
     sites = siteinds("Qubit", 2n)
-    exc = excited === :neel ? collect(1:2:n) :
-          excited === :single ? [1] : collect(Int.(excited))
-    st = fill("0", 2n); for j in exc; st[sys_pos(j)] = "1"; end
-    psi = MPS(sites, st)
+    psi = product_mps_with_ancillas(sites, n, initial_kets(n, excited))
 
     U = circuit_bond_matrix(theta)
     gA = [_gate2(U, sites[sys_pos(b)], sites[sys_pos(b+1)]) for b in 1:2:n-1]
