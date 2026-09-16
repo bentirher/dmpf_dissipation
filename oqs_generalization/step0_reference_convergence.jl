@@ -74,6 +74,14 @@ nladder  = parse(Int,     getenv("N_LADDER",  6))
 tag      = getenv("TAG", "")
 ks       = parse.(Int, split(getenv("KS", "3,8"), ","))
 cand_spl = Symbol(getenv("CAND_SPLITTING", "project"))
+evo_mode = Symbol(getenv("EVO_MODE", "gates"))   # :gates (default) or :mpo
+# Small-k0 ladder used ONLY to measure the effective order against a converged
+# gold reference. The main ladder cannot do this for a 4th-order scheme: at
+# dt = 3/24 its Trotter error is already below the numerical floor, so the
+# self-convergence differences are noise and p_eff comes out meaningless
+# (the v2 log gave -0.50, -0.55, +1.30, -1.53 for strang:4). To SEE order 4 you
+# need LARGER dt, i.e. SMALLER k0.
+order_ladder = parse.(Int, split(getenv("ORDER_LADDER", "2,3,4,6,8,12,24"), ","))
 
 # Reference schemes to compare, as "splitting:order" pairs.
 schemes = map(split(getenv("REF_SCHEMES", "project:2,project:4,strang:2,strang:4"), ",")) do s
@@ -91,7 +99,7 @@ ct   = 1e-16
 
 @printf("step0_reference_convergence (v2: splitting sweep + effective order)\n")
 @printf("  n=%d gamma=%.3f t=%.1f ks=%s\n", n, gamma, t, string(ks))
-@printf("  candidates: splitting=%s order=%d\n", cand_spl, order)
+@printf("  candidates: splitting=%s order=%d    evolution mode=%s\n", cand_spl, order, evo_mode)
 @printf("  reference schemes: %s\n", join(scheme_name.(schemes), ", "))
 @printf("  Liouville MPS ceiling = %d  (4^min(%d,%d)) -- every run below is UNTRUNCATED\n",
         chi, n ÷ 2, n - n ÷ 2)
@@ -122,7 +130,7 @@ rhos = MPS[]
 for kj in ks
     e = evolve_trotter(n, J, gammas, t, kj, lsites, rho0;
                        maxdim=chi, order=order, cutoff=ct,
-                       splitting=cand_spl, id_mps=O_id)
+                       splitting=cand_spl, mode=evo_mode, id_mps=O_id)
     push!(rhos, e.rho)
     @printf("  k=%-4d chi_S=%-5d chi_rho=%-5d raw Tr=%+.12f  <Z%d>=%+.8f\n",
             kj, e.chi_S, e.chi, real(e.trace), mid, real(expval(O_z, e.rho)))
@@ -146,9 +154,15 @@ for sc in schemes
     println("="^104)
     @printf("REFERENCE SCHEME  %s\n", nm)
     println("="^104)
-    println("   k0 |  raw Tr       <Z_mid>     <ZZ_mid>   |  " *
+    println("   k0 | sizeS |  raw Tr       <Z_mid>     <ZZ_mid>   |  " *
             join([@sprintf("E_k%-8d", kj) for kj in ks]) * " |     c1        E_mpf      time")
-    println("-"^104)
+    println("-"^112)
+    # sizeS = number of gates (:gates mode) or step-MPO bond dimension (:mpo).
+    # In :mpo mode a value sitting exactly at min(MPO_MAXDIM, 16^(n/2)) means the
+    # step operator itself was truncated -- a silent systematic on EVERY step,
+    # and the prime suspect for the ~5e-6 floor in the v2 log (at n=6 the middle
+    # cut is an odd bond, so strang:4's ten odd-layer crossings admit rank up to
+    # 4096 while MPO_MAXDIM defaults to 512). Flagged explicitly below.
 
     tracked[nm]   = Dict{Int,Vector{Float64}}()
     refstates[nm] = Dict{Int,MPS}()
@@ -158,7 +172,7 @@ for sc in schemes
         t0 = time()
         e = evolve_trotter(n, J, gammas, t, k0, lsites, rho0;
                            maxdim=chi, order=sc.order, cutoff=ct,
-                           splitting=sc.splitting, id_mps=O_id)
+                           splitting=sc.splitting, mode=evo_mode, id_mps=O_id)
         el = time() - t0
         rho_ref = e.rho
         refstates[nm][k0] = rho_ref
@@ -173,10 +187,11 @@ for sc in schemes
 
         tracked[nm][k0] = vcat(Ek, [sol.coeffs[1], sol.E_mpf, zval, zzv])
 
-        @printf("%5d | %+.10f %+.8f %+.8f  | %s | %+.6f %.4e %6.0fs\n",
-                k0, traces[k0], zval, zzv,
+        @printf("%5d | %5d%s| %+.10f %+.8f %+.8f  | %s | %+.6f %.4e %6.0fs\n",
+                k0, e.chi_S, e.step_truncated ? "!" : " ", traces[k0], zval, zzv,
                 join([@sprintf("%.4e ", x) for x in Ek]),
                 sol.coeffs[1], sol.E_mpf, el)
+        e.step_truncated && @warn "step MPO truncated at the cap: this is a systematic on every step. Raise MPO_MAXDIM or use EVO_MODE=gates." scheme=nm k0=k0 chi_S=e.chi_S
         flush(stdout)
     end
 
@@ -222,17 +237,99 @@ end
 # itself -- self-convergence cannot detect a systematic shared by every k0.
 
 k0max = k0s[end]
-println("="^104)
-@printf("CROSS-SCHEME AGREEMENT at k0 = %d\n", k0max)
-println("="^104)
-base = scheme_name(schemes[1])
-for sc in schemes[2:end]
-    nm = scheme_name(sc)
-    @printf("  ||rho[%s] - rho[%s]|| / ||rho|| = %.4e\n", nm, base,
-            relnorm(refstates[nm][k0max], refstates[base][k0max]))
+names = scheme_name.(schemes)
+
+# The gold reference: the highest-order symmetric scheme available. Everything
+# below is scored against THIS, never against a scheme's own k0_max -- scoring a
+# scheme against itself is what let v1 report PASS at k0=768 for a formula that
+# had not converged at all.
+best_scheme = let cands = filter(sc -> sc.splitting === :strang, schemes)
+    isempty(cands) ? schemes[end] : cands[argmax([sc.order for sc in cands])]
 end
-println("  (if these are NOT small, at least one scheme has not converged at k0_max,")
-println("   and the self-convergence tables above are measuring the wrong thing.)")
+
+println("="^104)
+@printf("CROSS-SCHEME AGREEMENT at k0 = %d   ||rho[row] - rho[col]|| / ||rho||\n", k0max)
+println("="^104)
+println("  " * rpad("", 14) * join([rpad(m, 12) for m in names]))
+for a in names
+    print("  " * rpad(a, 14))
+    for b in names
+        print(rpad(a == b ? "    --" : @sprintf("%.3e", relnorm(refstates[a][k0max], refstates[b][k0max])), 12))
+    end
+    println()
+end
+println()
+println("  Read this as a clustering, not a list. Schemes that agree with each other")
+println("  but differ from another cluster share a systematic. In the v2 log the two")
+println("  :project schemes agreed to 2.2e-5 while both sat 1.8e-4 from both :strang")
+println("  schemes -- exactly what you expect if project:4 is built from project:2 and")
+println("  inherits its first-order defect. That 1.8e-4 IS project:2's remaining error")
+println("  at k0 = 768.")
+println()
+
+# -----------------------------------------------------------------------------
+# EFFECTIVE ORDER, measured properly
+# -----------------------------------------------------------------------------
+#
+# The self-convergence tables above cannot measure the order of a high-order
+# scheme, for a simple reason: they compare rho(k0) against rho(k0_max) OF THE
+# SAME SCHEME, and once the Trotter error drops below the numerical floor both
+# are the same state plus independent noise. p_eff then becomes the log-ratio of
+# two noise realizations. That is precisely what the v2 log showed for strang:4
+# (e bouncing over 4e-6 to 1e-5 with no trend; p_eff = -0.50, -0.55, +1.30,
+# -1.53) -- not a broken formula, a saturated measurement.
+#
+# Fixing it needs two changes:
+#   1. Score against a GOLD reference from the best scheme, not against self.
+#   2. Use LARGER dt (smaller k0), so the Trotter error is well above the floor.
+#
+# The floor is estimated empirically as the gold scheme's own last
+# self-convergence value: both of those states are converged, so their
+# difference is pure numerical noise and nothing else.
+
+gold_name = scheme_name(best_scheme)
+rho_gold  = refstates[gold_name][k0max]
+floor_est = isempty(selfconv[gold_name]) ? 0.0 : selfconv[gold_name][end]
+
+println("="^104)
+@printf("EFFECTIVE ORDER against the %s gold reference at k0 = %d\n", gold_name, k0max)
+@printf("estimated numerical floor = %.3e  (the gold scheme's own last self-convergence value)\n", floor_est)
+println("="^104)
+
+ord_rows = String[]
+for sc in schemes
+    nm = scheme_name(sc)
+    @printf("\nscheme %s\n", nm)
+    println("     k0 |    dt    |  e = ||rho(k0)-gold||/||rho||  | p_eff  | status")
+    println("-"^104)
+    prev_e = NaN
+    for k0 in order_ladder
+        ev = evolve_trotter(n, J, gammas, t, k0, lsites, rho0;
+                            maxdim=chi, order=sc.order, cutoff=ct,
+                            splitting=sc.splitting, mode=evo_mode, id_mps=O_id)
+        e = relnorm(ev.rho, rho_gold)
+        p = (isnan(prev_e) || e <= 0) ? NaN : log2(prev_e / e)
+        at_floor = e < 5 * floor_est
+        @printf("  %5d | %.6f |          %.4e            | %6s | %s\n",
+                k0, t / k0, e, isnan(p) ? "  --" : @sprintf("%5.2f", p),
+                at_floor ? "AT FLOOR (p_eff meaningless)" : "ok")
+        push!(ord_rows, @sprintf("%s,%d,%d,%.8f,%.8e,%s,%s", string(sc.splitting), sc.order,
+                                 k0, t / k0, e, isnan(p) ? "" : @sprintf("%.4f", p),
+                                 at_floor ? "floor" : "ok"))
+        prev_e = e
+        flush(stdout)
+    end
+end
+println()
+println("  Read ONLY the rows marked ok, and only consecutive ok pairs. Targets:")
+println("    order 2 -> p_eff ~ 2      order 4 -> p_eff ~ 4")
+println("  If a scheme never leaves the floor on this ladder its error is below the")
+println("  floor everywhere, which is a PASS, not a failure -- push ORDER_LADDER to")
+println("  smaller k0 (larger dt) if you want to see the exponent itself.")
+println()
+write("step0_order$sfx.csv",
+      "splitting,order,k0,dt,rel_err_vs_gold,p_eff,status\n" * join(ord_rows, "\n") * "\n")
+println("  wrote step0_order$sfx.csv")
 println()
 
 # -----------------------------------------------------------------------------
@@ -244,10 +341,7 @@ println()
 # k0_max. Scoring a scheme against itself is what let v1 report "PASS" at
 # k0 = 768 for a formula that had not converged at all.
 
-best_scheme = let cands = filter(sc -> sc.splitting === :strang, schemes)
-    isempty(cands) ? schemes[end] : cands[argmax([sc.order for sc in cands])]
-end
-gold = tracked[scheme_name(best_scheme)][k0max]
+gold = tracked[gold_name][k0max]
 labels = vcat(["E_k$kj" for kj in ks], ["c1", "E_mpf", "Z_mid", "ZZ_mid"])
 
 println("="^104)

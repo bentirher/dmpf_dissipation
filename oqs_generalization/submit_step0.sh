@@ -47,6 +47,22 @@ export REF_SCHEMES=project:2,project:4,strang:2,strang:4
 export N_LADDER=6          # k0 in {24,48,96,192,384,768} for ks=3,8
 export REL_TOL=1e-3
 
+# ---- evolution mode --------------------------------------------------------
+# :gates applies the two-site gate list straight to the MPS. Use it. The :mpo
+# route compresses 25 layers (strang:4) into one operator first, and at n=6 the
+# middle cut is an ODD bond so those ten odd-layer crossings admit rank up to
+# 4096 while MPO_MAXDIM defaults to 512 -- i.e. the step operator was being
+# truncated, which is the prime suspect for the ~5e-6 floor in the v2 log.
+export EVO_MODE=gates
+export MPO_MAXDIM=512      # only used when EVO_MODE=mpo
+
+# ---- small-k0 ladder for the effective-order measurement -------------------
+# The main ladder cannot measure the order of a 4th-order scheme: at dt=3/24 its
+# error is already under the floor, so p_eff is the log-ratio of two noise
+# realizations (the v2 log gave -0.50, -0.55, +1.30, -1.53 for strang:4). Larger
+# dt is needed to see the exponent.
+export ORDER_LADDER=2,3,4,6,8,12,24
+
 echo "step0_reference_convergence on $(hostname)"; echo "start: $(date)"
 julia step0_reference_convergence.jl
 echo "end: $(date)"
