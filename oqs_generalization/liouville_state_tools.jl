@@ -167,7 +167,48 @@ function _norm2_canonical!(psi::MPS)
     return norm(psi[1])^2
 end
 
-function truncate_tracked!(psi::MPS; maxdim::Int, cutoff::Float64=1e-16)
+# ==============================================================================
+# THE CUTOFF TRAP -- read this before changing any cutoff in this file
+# ==============================================================================
+# ITensors' `cutoff` bounds the sum of the SQUARES of the discarded singular
+# values, relative to the total. So a cutoff of eps permits a discarded
+# AMPLITUDE of sqrt(eps):
+#
+#     cutoff = 1e-16   ->   state error ~1e-8 PER TRUNCATION
+#
+# That is not machine precision, it is the square root of it. ITensors' own
+# default is 0.0 (exact), so passing 1e-16 is strictly worse than passing
+# nothing.
+#
+# MEASURED, from the step0 gate-mode log (n=6, gamma=0.05, untruncated at the
+# chi=64 ceiling, strang:4). Raw trace deviation |1 - Tr(rho)|:
+#
+#     k0        24        48        96       192       384       768
+#     |1-Tr|  2.65e-7   5.43e-7   1.11e-6   2.41e-6   5.15e-6   1.06e-5
+#
+# Ratios 2.05, 2.04, 2.17, 2.14, 2.06 -- LINEAR in k0, i.e. a fixed per-step
+# error of ~1.4e-8 = sqrt(1e-16) accumulating coherently over the steps. Every
+# gate is exactly trace-preserving, so this is entirely the cutoff.
+#
+# It set the ~1e-5 floor that made strang:4's p_eff unreadable on the main
+# ladder, and it is why strang:4's E_mpf drifted monotonically downward
+# (2.6870e-4 -> 2.6859e-4) across a ladder on which it was already converged.
+#
+# Hence the default below. 1e-32 is used rather than 0.0 only to avoid any
+# edge-case handling of an exactly-zero cutoff; it corresponds to a discarded
+# amplitude of 1e-16, i.e. genuinely at round-off. Pass CUTOFF explicitly if you
+# want to study the effect.
+#
+# CONSEQUENCE FOR THE GOLD REFERENCE: for a converged high-order scheme the
+# Trotter error falls as k0^-p while this numerical error GROWS as k0^1, so the
+# best reference is the SMALLEST k0 that is Trotter-converged, not the largest.
+# Scoring against rho(k0_max) scores against the worst-conditioned state on the
+# ladder.
+# ==============================================================================
+
+const EXACT_CUTOFF = 1e-32
+
+function truncate_tracked!(psi::MPS; maxdim::Int, cutoff::Float64=EXACT_CUTOFF)
     nrm2_before = _norm2_canonical!(psi)
     truncate!(psi; maxdim=maxdim, cutoff=cutoff)
     nrm2_after = _norm2_canonical!(psi)
@@ -194,7 +235,7 @@ end
 # undercount and the x-axis of the headline figure would be wrong.
 
 function evolve_tracked(rho0::MPS, S::MPO, nsteps::Int;
-                        n::Int, maxdim::Int, cutoff::Float64=1e-16)
+                        n::Int, maxdim::Int, cutoff::Float64=EXACT_CUTOFF)
     ceil_ = state_max_bond_dim(n)
     @assert maxdim <= ceil_ "maxdim=$maxdim exceeds the n=$n Liouville MPS ceiling $ceil_"
     cap = min(ceil_, maxdim * maxlinkdim(S))
@@ -247,7 +288,7 @@ end
 # anyway and so are capped at n <= 10 regardless.
 
 function evolve_tracked_gates(rho0::MPS, gates::Vector{ITensor}, nsteps::Int;
-                              n::Int, maxdim::Int, cutoff::Float64=1e-16)
+                              n::Int, maxdim::Int, cutoff::Float64=EXACT_CUTOFF)
     ceil_ = state_max_bond_dim(n)
     @assert maxdim <= ceil_ "maxdim=$maxdim exceeds the n=$n Liouville MPS ceiling $ceil_"
 
@@ -291,7 +332,7 @@ end
 
 function evolve_trotter(n, J, gammas, t::Float64, k::Int, lsites::LiouvilleSites,
                         rho0::MPS; maxdim::Int, order::Int=2, dissipation::Bool=true,
-                        cutoff::Float64=1e-16, mpo_maxdim::Int=512,
+                        cutoff::Float64=EXACT_CUTOFF, mpo_maxdim::Int=512,
                         splitting::Symbol=:project, mode::Symbol=:gates,
                         renormalize_trace::Bool=true, id_mps::Union{MPS,Nothing}=nothing)
 

@@ -95,7 +95,21 @@ chi  = state_max_bond_dim(n)          # EXACT: no truncation possible here
 L    = lcm(ks...)
 k0s  = [L * 2^i for i in 0:(nladder - 1)]
 r    = length(ks)
-ct   = 1e-16
+# See the CUTOFF TRAP block in liouville_state_tools.jl. 1e-16 is NOT machine
+# precision here: ITensors' cutoff bounds the squared discarded weight, so it
+# permits a state error of sqrt(1e-16) = 1e-8 per truncation, which accumulates
+# linearly in k0 and set the ~1e-5 floor in the previous run.
+ct   = parse(Float64, getenv("CUTOFF", EXACT_CUTOFF))
+
+# Effective order between two ladder rungs. MUST divide by log(k0 ratio): the
+# order ladder is not geometric (2,3,4,6,8,12,24 -> ratios 1.5, 1.333, ...), so
+# a hardcoded log2 silently reports p * log2(ratio) instead of p. That is what
+# turned a clean fourth-order strang:4 into the apparent 3.51/1.94/2.44/1.68
+# sequence in the previous run.
+function eff_order(e_prev, k_prev, e_now, k_now)
+    (e_prev <= 0 || e_now <= 0 || k_now <= k_prev) && return NaN
+    return log(e_prev / e_now) / log(k_now / k_prev)
+end
 
 @printf("step0_reference_convergence (v2: splitting sweep + effective order)\n")
 @printf("  n=%d gamma=%.3f t=%.1f ks=%s\n", n, gamma, t, string(ks))
@@ -148,6 +162,7 @@ rows = ["splitting,order_ref,k0,raw_trace,Z_mid,ZZ_mid,E_k" * join(string.(ks), 
 tracked   = Dict{String,Dict{Int,Vector{Float64}}}()
 refstates = Dict{String,Dict{Int,MPS}}()
 selfconv  = Dict{String,Vector{Float64}}()
+tracedev  = Dict{String,Dict{Int,Float64}}()   # |1 - Tr(rho)| per (scheme, k0)
 
 for sc in schemes
     nm = scheme_name(sc)
@@ -167,6 +182,7 @@ for sc in schemes
     tracked[nm]   = Dict{Int,Vector{Float64}}()
     refstates[nm] = Dict{Int,MPS}()
     traces        = Dict{Int,Float64}()
+    tracedev[nm]  = Dict{Int,Float64}()
 
     for k0 in k0s
         t0 = time()
@@ -177,6 +193,7 @@ for sc in schemes
         rho_ref = e.rho
         refstates[nm][k0] = rho_ref
         traces[k0] = real(e.trace)
+        tracedev[nm][k0] = abs(1.0 - real(e.trace))
 
         zval = real(expval(O_z,  rho_ref))
         zzv  = real(expval(O_zz, rho_ref))
@@ -205,8 +222,8 @@ for sc in schemes
     println("  EFFECTIVE ORDER  p_eff = log2( e(k0/2) / e(k0) ):")
     peff = fill(NaN, length(k0s) - 1)
     for i in eachindex(sc_vals)
-        if i > 1 && sc_vals[i] > 0
-            peff[i] = log2(sc_vals[i-1] / sc_vals[i])
+        if i > 1
+            peff[i] = eff_order(sc_vals[i-1], k0s[i-1], sc_vals[i], k0s[i])
         end
         @printf("     k0 = %-5d  e = %.4e   p_eff = %s\n", k0s[i], sc_vals[i],
                 isnan(peff[i]) ? "  --" : @sprintf("%5.2f", peff[i]))
@@ -287,12 +304,57 @@ println()
 # self-convergence value: both of those states are converged, so their
 # difference is pure numerical noise and nothing else.
 
+# -----------------------------------------------------------------------------
+# NUMERICAL ERROR BUDGET
+# -----------------------------------------------------------------------------
+#
+# Every gate is exactly trace-preserving, so |1 - Tr(rho)| is a direct readout of
+# the accumulated numerical error and nothing else. What matters is its SCALING:
+#
+#   grows like k0^1  -> a fixed per-step error accumulating coherently. Almost
+#                       always the cutoff (see the CUTOFF TRAP block in
+#                       liouville_state_tools.jl): ITensors' cutoff bounds the
+#                       SQUARED discarded weight, so cutoff=1e-16 permits a state
+#                       error of 1e-8 per truncation. The previous run showed
+#                       exactly this: strang:4 ratios 2.05, 2.04, 2.17, 2.14,
+#                       2.06 per doubling, ~1.4e-8 per step, reaching 1.06e-5.
+#   flat or sqrt(k0) -> round-off. Nothing to fix.
+#
+# This matters for the choice of gold reference. For a converged scheme of order
+# p the Trotter error falls as k0^-p while THIS error grows as k0^1, so if the
+# per-step number is large the best reference is the SMALLEST Trotter-converged
+# k0, not the largest -- and scoring against rho(k0_max), as the verdict below
+# does by default, scores against the worst-conditioned state on the ladder.
+
+println("="^104)
+println("NUMERICAL ERROR BUDGET   |1 - Tr(rho)|  (every gate is exactly trace-preserving)")
+println("="^104)
+println("  " * rpad("scheme", 14) * join([rpad("k0=$k", 12) for k in k0s]) * " | per-step (k0_max) | scaling")
+for sc in schemes
+    nm = scheme_name(sc)
+    d  = tracedev[nm]
+    lo, hi = d[k0s[1]], d[k0s[end]]
+    growth = lo > 0 ? log(hi / lo) / log(k0s[end] / k0s[1]) : NaN
+    print("  " * rpad(nm, 14))
+    for k in k0s; print(rpad(@sprintf("%.2e", d[k]), 12)); end
+    @printf(" |     %.2e      | k0^%.2f %s\n", hi / k0s[end], growth,
+            growth > 0.8 ? "<- COHERENT: suspect the cutoff" : "")
+end
+@printf("\n  cutoff in use = %.1e  ->  permitted state error per truncation = %.1e\n",
+        ct, sqrt(ct))
+println()
+
 gold_name = scheme_name(best_scheme)
-rho_gold  = refstates[gold_name][k0max]
+# Which k0 to take the gold reference from. k0_max is right once the numerical
+# error is at round-off; if the budget above shows k0^1 growth, override with
+# GOLD_K0 to a smaller, still-Trotter-converged rung.
+gold_k0   = parse(Int, getenv("GOLD_K0", k0max))
+@assert haskey(refstates[gold_name], gold_k0) "GOLD_K0=$gold_k0 is not on the ladder $(k0s)"
+rho_gold  = refstates[gold_name][gold_k0]
 floor_est = isempty(selfconv[gold_name]) ? 0.0 : selfconv[gold_name][end]
 
 println("="^104)
-@printf("EFFECTIVE ORDER against the %s gold reference at k0 = %d\n", gold_name, k0max)
+@printf("EFFECTIVE ORDER against the %s gold reference at k0 = %d\n", gold_name, gold_k0)
 @printf("estimated numerical floor = %.3e  (the gold scheme's own last self-convergence value)\n", floor_est)
 println("="^104)
 
@@ -302,13 +364,13 @@ for sc in schemes
     @printf("\nscheme %s\n", nm)
     println("     k0 |    dt    |  e = ||rho(k0)-gold||/||rho||  | p_eff  | status")
     println("-"^104)
-    prev_e = NaN
+    prev_e = NaN; prev_k = 0
     for k0 in order_ladder
         ev = evolve_trotter(n, J, gammas, t, k0, lsites, rho0;
                             maxdim=chi, order=sc.order, cutoff=ct,
                             splitting=sc.splitting, mode=evo_mode, id_mps=O_id)
         e = relnorm(ev.rho, rho_gold)
-        p = (isnan(prev_e) || e <= 0) ? NaN : log2(prev_e / e)
+        p = isnan(prev_e) ? NaN : eff_order(prev_e, prev_k, e, k0)
         at_floor = e < 5 * floor_est
         @printf("  %5d | %.6f |          %.4e            | %6s | %s\n",
                 k0, t / k0, e, isnan(p) ? "  --" : @sprintf("%5.2f", p),
@@ -316,7 +378,7 @@ for sc in schemes
         push!(ord_rows, @sprintf("%s,%d,%d,%.8f,%.8e,%s,%s", string(sc.splitting), sc.order,
                                  k0, t / k0, e, isnan(p) ? "" : @sprintf("%.4f", p),
                                  at_floor ? "floor" : "ok"))
-        prev_e = e
+        prev_e = e; prev_k = k0
         flush(stdout)
     end
 end
@@ -341,12 +403,12 @@ println()
 # k0_max. Scoring a scheme against itself is what let v1 report "PASS" at
 # k0 = 768 for a formula that had not converged at all.
 
-gold = tracked[gold_name][k0max]
+gold = tracked[gold_name][gold_k0]
 labels = vcat(["E_k$kj" for kj in ks], ["c1", "E_mpf", "Z_mid", "ZZ_mid"])
 
 println("="^104)
 @printf("VERDICT  (rel. tolerance %.1e against the %s reference at k0 = %d)\n",
-        reltol, scheme_name(best_scheme), k0max)
+        reltol, gold_name, gold_k0)
 println("="^104)
 
 recommended = Dict{String,Int}()

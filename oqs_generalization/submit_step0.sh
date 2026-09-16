@@ -53,6 +53,14 @@ export REL_TOL=1e-3
 # middle cut is an ODD bond so those ten odd-layer crossings admit rank up to
 # 4096 while MPO_MAXDIM defaults to 512 -- i.e. the step operator was being
 # truncated, which is the prime suspect for the ~5e-6 floor in the v2 log.
+# ---- cutoff -----------------------------------------------------------------
+# ITensors' cutoff bounds the SQUARED discarded weight, so cutoff=1e-16 permits
+# a state error of sqrt(1e-16) = 1e-8 PER TRUNCATION. That accumulated linearly
+# in k0 and set the ~1e-5 floor in the previous run (strang:4 |1-Tr| doubling
+# with every doubling of k0, reaching 1.06e-5 at k0=768). Leave this at
+# round-off; raise it only to reproduce that floor deliberately.
+export CUTOFF=1e-32
+
 export EVO_MODE=gates
 export MPO_MAXDIM=512      # only used when EVO_MODE=mpo
 
