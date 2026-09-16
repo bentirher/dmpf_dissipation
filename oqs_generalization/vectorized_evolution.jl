@@ -274,17 +274,50 @@ end
 # fourth order if the base really is second order). Establish the fact first
 # with MODE=order, then decide.
 
-"Symmetric (genuinely second-order) Strang splitting of odd / even / dissipator."
+"""
+Symmetric (palindromic) Strang splitting of odd / even / dissipator.
+
+MEASURED at n=8, gamma=0.05, maxdim=256 (exact, no truncation), effective order
+from successive differences:
+
+    t        2      4      6     10
+  :project  1.6    1.6    2.3   sign flip     <- get_open_step_gates(order=2)
+  :strang   2.0    2.0    2.0   2.1
+
+Being palindromic is what buys this: S(-dt) = S(dt)^-1 implies the effective
+generator expands in EVEN powers of dt only, so the leading error is dt^2 with
+no dt^1 term. The project's composition is not palindromic (swapping the even
+and dissipator layers changes it), so its expansion contains both parities --
+which is exactly why its error changed sign between dt=0.05 and dt=0.025 at
+t=10 rather than shrinking monotonically.
+"""
 function strang_open_step_gates(n, J, gammas, dt, lsites::LiouvilleSites;
-                                dissipation::Bool=true)
-    g = vcat(
-        odd_layer_channel_gates(n, J, dt/2, lsites),
-        even_layer_channel_gates(n, J, dt/2, lsites),
-    )
-    dissipation && append!(g, dissipator_layer_channel_gates(n, gammas, dt, lsites))
-    append!(g, even_layer_channel_gates(n, J, dt/2, lsites))
-    append!(g, odd_layer_channel_gates(n, J, dt/2, lsites))
-    return g
+                                dissipation::Bool=true, order::Int=2)
+    if order == 2
+        g = vcat(
+            odd_layer_channel_gates(n, J, dt/2, lsites),
+            even_layer_channel_gates(n, J, dt/2, lsites),
+        )
+        dissipation && append!(g, dissipator_layer_channel_gates(n, gammas, dt, lsites))
+        append!(g, even_layer_channel_gates(n, J, dt/2, lsites))
+        append!(g, odd_layer_channel_gates(n, J, dt/2, lsites))
+        return g
+    elseif order == 4
+        # Yoshida/Suzuki triple-jump. This construction reaches fourth order
+        # ONLY if the base is second order AND symmetric. That is the case here
+        # and is NOT obviously the case for get_open_step_gates_order4, which
+        # applies the same five-substep recipe to the non-palindromic order-2
+        # composition above. Worth checking directly (MODE=order, ORDER=4).
+        p1 = 1 / (4 - 4^(1/3)); p2 = 1 - 4p1
+        return vcat(
+            strang_open_step_gates(n, J, gammas, p1*dt, lsites; dissipation=dissipation, order=2),
+            strang_open_step_gates(n, J, gammas, p1*dt, lsites; dissipation=dissipation, order=2),
+            strang_open_step_gates(n, J, gammas, p2*dt, lsites; dissipation=dissipation, order=2),
+            strang_open_step_gates(n, J, gammas, p1*dt, lsites; dissipation=dissipation, order=2),
+            strang_open_step_gates(n, J, gammas, p1*dt, lsites; dissipation=dissipation, order=2),
+        )
+    end
+    error("strang_open_step_gates supports order 2 or 4, got $order.")
 end
 
 """
@@ -299,8 +332,8 @@ function step_gates(n, J, gammas, dt, lsites::LiouvilleSites;
         return get_open_step_gates(n, J, gammas, dt, lsites;
                                    order=order, dissipation=dissipation)
     elseif splitting === :strang
-        order == 2 || error("splitting=:strang is defined for order=2 only, got order=$order.")
-        return strang_open_step_gates(n, J, gammas, dt, lsites; dissipation=dissipation)
+        return strang_open_step_gates(n, J, gammas, dt, lsites;
+                                      dissipation=dissipation, order=order)
     end
     error("splitting must be :project or :strang, got $splitting.")
 end
@@ -331,8 +364,23 @@ function bond_report(psi::MPS, tols::Vector{Float64})
     linkd = zeros(Int, nb)
     chis = [zeros(Int, nb) for _ in tols]
 
+    # ONE copy, ONE left-to-right sweep. The first version called
+    # bond_schmidt_spectrum(psi, b) per bond, and that helper does a
+    # NON-MUTATING orthogonalize -- so it copied the whole MPS and re-gauged
+    # from scratch (n-1) times per call, O(n^2) gauge work at chi^3 each. With
+    # local dimension 4 and chi ~ 1000 that dominated the circuit study and was
+    # the main reason the theta sweeps hit the wall. Moving the orthogonality
+    # centre one site at a time is O(1) amortised per bond.
+    phi = orthogonalize(psi, 1)
     for b in 1:nb
-        p = bond_schmidt_spectrum(psi, b)
+        b > 1 && orthogonalize!(phi, b)
+        lefties = uniqueinds(phi[b], phi[b+1])
+        _, Sv, _ = svd(phi[b], lefties)
+        p = Float64[]
+        for i in 1:dim(Sv, 1); push!(p, abs2(Sv[i,i])); end
+        tot = sum(p)
+        tot > 0 && (p ./= tot)
+        sort!(p; rev=true)
         S1[b]    = von_neumann_entropy(p)
         Shalf[b] = renyi_entropy(p, 0.5)
         linkd[b] = length(p)
