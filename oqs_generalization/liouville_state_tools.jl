@@ -10,6 +10,10 @@ include("F_diagnostics.jl")   # top of the include chain -- pulls in, in order:
                               #
                               # Same include discipline as trotter_error_gram.jl: do NOT include
                               # open_middle_out_contraction.jl directly.
+include("symmetric_splitting.jl")   # split_step_MPO, :project vs :strang.
+                                    # MUST come after the chain above: it uses
+                                    # odd/even/dissipator_layer_channel_gates and
+                                    # identity_liouville_mpo.
 
 # =============================================================================
 # liouville_state_tools.jl
@@ -208,15 +212,37 @@ end
 # -----------------------------------------------------------------------------
 # One call: rho_k(t) for a given number of Trotter steps
 # -----------------------------------------------------------------------------
+#
+# `splitting` selects the product formula (see symmetric_splitting.jl):
+#   :project  the existing get_open_step_gates. Order 2 is really order 1 once
+#             gamma > 0, and order 4 is not order 4. Kept as the default so the
+#             candidates can stay exactly as they have always been.
+#   :strang   palindromic, genuinely order 2 (and genuinely order 4). Use this
+#             for the REFERENCE, which has to be converged.
+#
+# `renormalize_trace` divides out Tr(rho) after the evolution. Every gate is
+# exactly trace-preserving, so any deviation from 1 is pure accumulated `apply`
+# error -- the step0 log shows it growing monotonically to 1.1e-6 at k0 = 768,
+# about 1.4e-9 per step, which is a ~1% contamination of quantities of order
+# 1e-4. Dividing it out is strictly an improvement, and the raw trace is
+# returned either way so it can be watched rather than hidden.
 
 function evolve_trotter(n, J, gammas, t::Float64, k::Int, lsites::LiouvilleSites,
                         rho0::MPS; maxdim::Int, order::Int=2, dissipation::Bool=true,
-                        cutoff::Float64=1e-16, mpo_maxdim::Int=512)
-    S = get_open_step_MPO(n, J, gammas, t / k, lsites, cutoff,
-                          min(mpo_maxdim, mpo_max_bond_dim(n));
-                          order=order, dissipation=dissipation)
+                        cutoff::Float64=1e-16, mpo_maxdim::Int=512,
+                        splitting::Symbol=:project,
+                        renormalize_trace::Bool=true, id_mps::Union{MPS,Nothing}=nothing)
+    S = split_step_MPO(n, J, gammas, t / k, lsites, cutoff,
+                       min(mpo_maxdim, mpo_max_bond_dim(n));
+                       order=order, dissipation=dissipation, splitting=splitting)
     psi, eps = evolve_tracked(rho0, S, k; n=n, maxdim=maxdim, cutoff=cutoff)
-    return (rho=psi, eps=eps, chi_S=maxlinkdim(S), chi=maxlinkdim(psi))
+
+    idm = id_mps === nothing ? identity_observable(lsites) : id_mps
+    tr = inner(idm, psi)
+    if renormalize_trace && abs(tr) > 1e-12
+        psi[1] = psi[1] / tr
+    end
+    return (rho=psi, eps=eps, chi_S=maxlinkdim(S), chi=maxlinkdim(psi), trace=tr)
 end
 
 
