@@ -36,9 +36,27 @@ export ORDER_REF=4 SPLITTING_REF=strang
 export K0=48        # 48, not 24: divisible by lcm of every sensible family, and
                     # strang:4 error there is ~2e-7, negligible against err_proj
 
-# ---- from the FAMILY SCAN -- replace with whatever it recommends ------------
+# ---- candidate families -----------------------------------------------------
+# SEVERAL at once. The reference evolution dominates the cost and all families
+# share one candidate pool, so each extra family is nearly free -- and which one
+# survives truncation cannot be predicted from cond(N) (the naive p^2/lam_min
+# estimate missed the Step 1 measurement by six orders of magnitude).
+#
+# The scan at n=6 and n=8 gave, for err_proj / cond(N):
+#     3,8          2.5e-3 / 3.9e2    baseline, r<3
+#     4,8,16       1.6e-5 / 9.3e6    in the resolvable window
+#     2,4,8,16     6.4e-6 / 2.3e8    "
+#     4,6,8,12     1.0e-6 / 3.2e9    borderline: near the reference floor
+#     6,8,12,16    5.2e-8 / 3.8e11   BELOW the reference floor, N near-singular
+#     4,6,8,12,16,24 2.3e-8 / 1e12   N SINGULAR (eigenvalues clipped)
+# so the last two are excluded: their err_proj is below the k0=48 reference's
+# own error (~1.8e-7), which means the fit is copying the reference's Trotter
+# error rather than approaching the truth.
 export ORDER=2 SPLITTING=strang
-export KS=4,6,8,12
+export FAMILIES="3,8;4,8,16;2,4,8,16;4,6,8,12"
+export REF_CHECK=1   # measures ||rho(k0)-rho(2k0)||, so the reference floor is
+                     # reported rather than assumed. Costs one extra reference
+                     # evolution per n; set to 0 if n=10 runs long.
 
 # ---- the sweep --------------------------------------------------------------
 # n=10 needs an exact reference at chi = 4^5 = 1024; the central SVDs are

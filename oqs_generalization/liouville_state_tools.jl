@@ -415,8 +415,14 @@ function coefficients_from_N(N::AbstractMatrix; rel_floor::Float64=1e-12)
     Ninv_1 = F.vectors * (y ./ lam_reg)
     denom = dot(ones_v, Ninv_1)
 
+    # A cond of exactly 1/rel_floor means lam_min was CLIPPED: N is numerically
+    # singular and both E_mpf and the coefficients are fictions below the
+    # resolution of the Gram matrix that produced them. n_clipped and lam_min
+    # are returned so callers can say so out loud instead of quoting 1e-13.
     return (coeffs=Ninv_1 ./ denom,
             E_mpf=1.0 / denom,
+            lam_min=minimum(lam),
+            singular=(minimum(lam) <= floorval),
             E_trot=[Nsym[j, j] for j in 1:r],
             eigvals=lam,
             eigvecs=F.vectors,

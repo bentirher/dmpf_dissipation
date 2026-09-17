@@ -141,14 +141,25 @@ end
 println()
 
 # ---- score each family ------------------------------------------------------
-rows = ["family,r,lcm,k0_ok,E_mpf,cond_N,lam_min,E_best_single,err_proj_mean,err_single_mean,proj_over_single,c_max_abs"]
+rows = ["family,r,lcm,k0_ok,E_mpf,cond_N,lam_min,singular,below_ref,E_best_single,err_proj_mean,err_single_mean,proj_over_single,c_max_abs"]
 results = []
 
 println("="^118)
 println("FAMILY SCAN")
 println("="^118)
-@printf("%-22s %3s %6s %5s | %-11s %-10s | %-11s %-11s %-7s | %-9s\n",
-        "ks", "r", "lcm", "k0%", "E_mpf", "cond(N)", "err_proj", "err_single", "ratio", "max|c|")
+# REFERENCE FLOOR. The fit minimises ||sum c_j rho_kj - rho_ref||, so driving
+# that to zero reproduces rho_ref INCLUDING ITS OWN TROTTER ERROR. Any err_proj
+# below the reference's error is therefore not a measurement of accuracy, it is
+# the fit successfully copying a slightly wrong state. Step 0 measured strang:4
+# self-convergence at 1.77e-7 (k0=48, n=6) and 4.01 as the effective order, so
+# the reference error scales as k0^-4 from there.
+ref_floor = parse(Float64, getenv("REF_FLOOR", 1.77e-7 * (48 / k0)^4))
+@printf("reference error floor (est.) = %.2e -- err_proj below this is NOT resolvable\n", ref_floor)
+@printf("  (strang:4 at k0=48 measured 1.77e-7 in Step 0, scaled by k0^-4)\n\n")
+
+@printf("%-22s %3s %6s %5s | %-11s %-10s %-10s | %-11s %-11s %-7s | %-7s %s\n",
+        "ks", "r", "lcm", "k0%", "E_mpf", "cond(N)", "lam_min", "err_proj", "err_single",
+        "ratio", "max|c|", "flags")
 println("-"^118)
 
 for ks in families
@@ -166,17 +177,26 @@ for ks in families
     ok = (k0 % L == 0)
     epm, esm = sum(ep) / n_obs, sum(es) / n_obs
 
+    # Two ways this family can be reporting a number that does not exist:
+    #   singular  -> lam_min was clipped at rel_floor; E_mpf is below the
+    #                resolution of N itself
+    #   below_ref -> err_proj is under the reference's own Trotter error, so it
+    #                measures how well the fit copies rho_ref, not accuracy
+    below_ref = epm < ref_floor
+    flags = string(sol.singular ? "SINGULAR " : "", below_ref ? "BELOW-REF " : "",
+                   r < 3 ? "r<3 " : "")
+
     push!(results, (ks=ks, E_mpf=sol.E_mpf, cond=sol.cond, epm=epm, esm=esm,
-                    ratio=epm / max(esm, 1e-300), cmax=maximum(abs.(c)), r=r, ok=ok))
-    push!(rows, @sprintf("\"%s\",%d,%d,%s,%.8e,%.6e,%.6e,%.8e,%.8e,%.8e,%.6f,%.6f",
+                    ratio=epm / max(esm, 1e-300), cmax=maximum(abs.(c)), r=r, ok=ok,
+                    singular=sol.singular, below_ref=below_ref, lam_min=sol.lam_min))
+    push!(rows, @sprintf("\"%s\",%d,%d,%s,%.8e,%.6e,%.6e,%s,%s,%.8e,%.8e,%.8e,%.6f,%.6f",
                          join(ks, "-"), r, L, ok ? "yes" : "NO", sol.E_mpf, sol.cond,
-                         minimum(sol.eigvals), minimum(sol.E_trot), epm, esm,
+                         sol.lam_min, sol.singular, below_ref, minimum(sol.E_trot), epm, esm,
                          epm / max(esm, 1e-300), maximum(abs.(c))))
 
-    @printf("%-22s %3d %6d %5s | %.4e  %.3e  | %.4e  %.4e  %6.3f  | %8.3f%s\n",
-            join(ks, ","), r, L, ok ? "ok" : "NO", sol.E_mpf, sol.cond,
-            epm, esm, epm / max(esm, 1e-300), maximum(abs.(c)),
-            r < 3 ? "   (r<3: dc has only one direction)" : "")
+    @printf("%-22s %3d %6d %5s | %.4e  %.3e  %.3e | %.4e  %.4e  %6.3f  | %7.3f %s\n",
+            join(ks, ","), r, L, ok ? "ok" : "NO", sol.E_mpf, sol.cond, sol.lam_min,
+            epm, esm, epm / max(esm, 1e-300), maximum(abs.(c)), flags)
     flush(stdout)
 end
 
@@ -186,15 +206,37 @@ println("="^118)
 println("RECOMMENDATION")
 println("="^118)
 
-viable = filter(x -> x.r >= 3 && x.ok && x.cond < 1e4 && x.ratio < 1.0, results)
+# SELECTION. The previous fallback minimised err_proj over everything, which
+# picked the MOST singular family -- the one whose reported err_proj was pure
+# fiction. Minimising err_proj is wrong once err_proj stops being the binding
+# constraint. What we want is a family inside a WINDOW:
+#
+#   err_proj > ref_floor    resolvable against the reference at all
+#   err_proj < EP_MAX       not the binding constraint against classical
+#                           simulation (which reached 1.5e-3 at chi=128, n=8)
+#   not singular            N has a numerically meaningful smallest eigenvalue
+#   r >= 3                  dc has more than one direction, so the Appendix D
+#                           mechanism is testable
+#
+# and WITHIN that window, the BEST CONDITIONED one -- because conditioning is
+# what decides survival under truncation, which is the entire point of Step 2.
+ep_max = parse(Float64, getenv("EP_MAX", 1e-4))
+viable = filter(x -> x.r >= 3 && x.ok && !x.singular &&
+                     x.epm > ref_floor && x.epm < ep_max, results)
 if isempty(viable)
-    println("  No family satisfies all of: r>=3, k0 divisible by lcm, cond(N)<1e4, proj<single.")
-    println("  Relax in this order -- cond(N) first (it only costs truncation robustness),")
-    println("  then the k0 divisibility (it only costs MOC cross-checkability), and only")
-    println("  last r>=3 (which costs the Appendix D mechanism entirely).")
-    best = results[argmin([x.epm for x in results])]
+    println("  No family lands in the window [ref_floor, EP_MAX] with r>=3 and a")
+    println("  non-singular N. Relax in this order:")
+    println("    1. raise EP_MAX -- costs accuracy headroom against classical simulation")
+    println("    2. raise K0     -- lowers ref_floor as k0^-4, opening the bottom of the")
+    println("                       window. This is usually the RIGHT fix: it is the")
+    println("                       reference, not the family, that is limiting.")
+    println("    3. drop r>=3    -- costs the Appendix D mechanism entirely")
+    println("  Falling back to the best-conditioned non-singular family with r>=3.")
+    fb = filter(x -> x.r >= 3 && !x.singular, results)
+    best = isempty(fb) ? results[argmin([x.cond for x in results])] :
+                         fb[argmin([x.cond for x in fb])]
 else
-    best = viable[argmin([x.epm for x in viable])]
+    best = viable[argmin([x.cond for x in viable])]
 end
 
 @printf("\n  BEST: ks = %s\n", join(best.ks, ","))
@@ -202,8 +244,17 @@ end
 @printf("    E_mpf     = %.4e\n", best.E_mpf)
 @printf("    err_proj  = %.4e   (this is the FLOOR the n-sweep must beat a classical\n", best.epm)
 @printf("                          simulation with -- nothing downstream can go below it)\n")
-@printf("    cond(N)   = %.3e\n", best.cond)
+@printf("    cond(N)   = %.3e   lam_min = %.3e\n", best.cond, best.lam_min)
 @printf("    vs best single circuit: %.3f\n", best.ratio)
+println()
+println("  DO NOT commit to a single family on this scan alone. Conditioning decides")
+println("  survival under truncation, and that CANNOT be predicted from cond(N): the")
+println("  naive estimate dc'N dc ~ p^2/lam_min missed the Step 1 measurement by six")
+println("  orders of magnitude, because the perturbation to N is structured (the")
+println("  truncation errors are correlated across entries, corr ~ 0.5) and largely")
+println("  misses the small eigenvalue. Pass several families to step2 and let the")
+println("  chi sweep decide -- it costs almost nothing, since the reference evolution")
+println("  dominates and all families share one candidate pool.")
 
 cur = findfirst(x -> x.ks == [3, 8], results)
 if cur !== nothing
