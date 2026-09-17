@@ -26,7 +26,7 @@ module load Julia/1.11.6-linux-x86_64
 export JULIA_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
-export N_QUBITS=6 GAMMA=0.05 TVAL=3.0
+export N_QUBITS=8 GAMMA=0.05 TVAL=3.0
 export K0=48 ORDER_REF=4 SPLITTING_REF=strang
 export ORDER=2 SPLITTING=strang     # candidates now on the SYMMETRIC formula
 export EVO_MODE=gates CUTOFF=1e-32
