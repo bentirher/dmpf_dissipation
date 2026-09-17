@@ -229,8 +229,14 @@ observable and sweep helpers so a circuit is never run more than once per point.
 """
 function mpdo_run(n::Int, theta::Float64, p::Float64, k::Int;
                   cutoff::Float64=1e-12, maxdim::Int=1024,
-                  excited=:neel, dissipation::Bool=true)
-    lsites = liouville_siteinds(n)
+                  excited=:neel, dissipation::Bool=true, lsites=nothing)
+    # `lsites` lets two runs SHARE one set of Index objects. Without it every
+    # call makes fresh indices, and any operation relating the two states --
+    # inner(rho, rho_ref) for a distance, or one site operator applied to both --
+    # has nothing to contract and throws. That is what broke the HS-distance
+    # version of trotter_infidelity: the older code only ever compared numbers
+    # extracted from self-contained runs, so it never noticed.
+    lsites = isnothing(lsites) ? liouville_siteinds(n) : lsites
     rho = vectorized_product_mps(lsites, initial_kets(n, excited))
     U = circuit_bond_matrix(theta)
     odd  = vcat([unitary_channel_gates(U, [j, j+1], lsites) for j in 1:2:n-1]...)
@@ -253,9 +259,9 @@ the whole circuit n times for data that is already there.
 """
 function mpdo_expectation_Z_all(n::Int, theta::Float64, p::Float64, k::Int;
                                 cutoff::Float64=1e-12, maxdim::Int=1024,
-                                excited=:neel, dissipation::Bool=true)
+                                excited=:neel, dissipation::Bool=true, lsites=nothing)
     rho, lsites = mpdo_run(n, theta, p, k; cutoff=cutoff, maxdim=maxdim,
-                           excited=excited, dissipation=dissipation)
+                           excited=excited, dissipation=dissipation, lsites=lsites)
     tr = inner(identity_vectorized_mps(lsites), rho)
     return [real(inner(pauli_z_vectorized_mps(lsites, j), rho) / tr) for j in 1:n]
 end
@@ -313,9 +319,11 @@ real trade-off and it should be shown rather than asserted.
 function trotter_infidelity(n::Int, theta::Float64, p::Float64, k::Int;
                             k_ref::Int=1000, cutoff::Float64=1e-12,
                             maxdim::Int=1024, excited=:neel)
-    rho , ls  = mpdo_run(n, theta, p, k; cutoff=cutoff, maxdim=maxdim, excited=excited)
-    rhor, _   = mpdo_run(n, theta*k/k_ref, 1-(1-p)^(k/k_ref), k_ref;
-                         cutoff=cutoff, maxdim=maxdim, excited=excited)
+    ls = liouville_siteinds(n)          # ONE index set, shared by both runs
+    rho , _ = mpdo_run(n, theta, p, k; cutoff=cutoff, maxdim=maxdim,
+                       excited=excited, lsites=ls)
+    rhor, _ = mpdo_run(n, theta*k/k_ref, 1-(1-p)^(k/k_ref), k_ref;
+                       cutoff=cutoff, maxdim=maxdim, excited=excited, lsites=ls)
     idm = identity_vectorized_mps(ls)
     rho  = rho  / inner(idm, rho)          # normalise both traces to 1
     rhor = rhor / inner(idm, rhor)
