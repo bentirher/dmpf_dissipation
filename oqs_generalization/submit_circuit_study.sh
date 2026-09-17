@@ -115,8 +115,20 @@ case $SLURM_ARRAY_TASK_ID in
   # MAXDIM=4096 with a narrowed theta grid around the plateau. Cost scales as
   # chi^3, but k=10 is only 1/24 of the 240-step continuum runs, so this is
   # ~30 min rather than the 5.6 h its continuum counterpart took.
-  10) export MODE=theta N=24 MAXDIM=4096 NTRAJ=64 EXCITED=random
-      export THETAS=0.50,0.65,0.80,0.95,1.10,1.25,1.40,1.90,2.10,2.40
+  # MAXDIM_TRAJ uncensors the trajectory route; MAXDIM_MPDO stays at 256 and
+  # SKIP_MPDO drops the MPDO entirely. At n=24 the MPDO is an MPS of local
+  # dimension 4, so a cap of 4096 means 16384 x 16384 SVDs -- ~4e12 flops each,
+  # 460 per theta point, single-threaded BLAS. That is what made the first
+  # attempt look hung: it was grinding through its first SVD. The MPDO is
+  # carried for context only and is already known to lose, so there is nothing
+  # to gain by paying for it here.
+  #
+  # Five theta points across the plateau rather than ten, and NTRAJ=32 (two
+  # waves on 16 threads). At an expected chi_traj ~ 1000 that is ~45 min per
+  # point, so ~4 h for the task.
+  10) export MODE=theta N=24 NTRAJ=32 EXCITED=random
+      export MAXDIM_TRAJ=4096 MAXDIM_MPDO=256 SKIP_MPDO=true
+      export THETAS=0.65,0.80,0.95,1.10,1.25
       export OUTDIR=ckt_theta_n24_big TAG=n24big ;;
 
   # Fidelity again, now reporting BOTH max|dZ| and the Hilbert-Schmidt distance.
@@ -185,13 +197,15 @@ case $SLURM_ARRAY_TASK_ID in
   # theta=pi/2 the |+> circuit is Clifford on a stabilizer state, and while 0.95
   # is not pi/2 it is better not to have a Gottesman-Knill argument anywhere
   # near the operating point.
-  3) export MODE=damping N=20 THETA=0.95 MAXDIM=2048 NTRAJ=128 EXCITED=random
+  3) export MODE=damping N=20 THETA=0.95 NTRAJ=128 EXCITED=random
+     export MAXDIM_TRAJ=2048 MAXDIM_MPDO=256
      export PLIST=0.0,0.005,0.01,0.02,0.035,0.05,0.08,0.12,0.18,0.25
      export OUTDIR=ckt_damping TAG=n20 ;;
 
   # --- STEP 4: n scaling at the chosen (theta, p) --------------------------
   # THETA and P must both be replaced with the Step 2 / Step 3 optima first.
-  4) export MODE=scaling NLIST=8,12,16,20,24,28,32 THETA=0.95 MAXDIM=4096 NTRAJ=64 EXCITED=random
+  4) export MODE=scaling NLIST=8,12,16,20,24,28 THETA=0.95 NTRAJ=32 EXCITED=random
+     export MAXDIM_TRAJ=4096 MAXDIM_MPDO=256
      export OUTDIR=ckt_scaling TAG=opt ;;
 esac
 
