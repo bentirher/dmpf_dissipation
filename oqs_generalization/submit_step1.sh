@@ -28,15 +28,17 @@ export JULIA_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 export N_QUBITS=8 GAMMA=0.05 TVAL=3.0 ORDER=2
-export KS=3,8
+export KS=4,6,8,12    # from the family scan; r>=3 so dc has more than one
+                      # direction and the Appendix D mechanism is testable
 
 # ---- SET THESE THREE FROM THE STEP 0 RECOMMENDATION -----------------------
 # Step 0 prints them in the form:  export K0=... ORDER_REF=... SPLITTING_REF=...
-export K0=24
+export K0=48          # divisible by lcm(ks); strang:4 error there ~2e-7
 export ORDER_REF=4
 export SPLITTING_REF=strang
 # Candidates stay on the existing composition; only the reference moves.
-export SPLITTING=project
+export SPLITTING=strang   # candidates on the SYMMETRIC formula; :project is
+                          # first order once gamma>0 (Step 0: p_eff=1.00)
 #
 # Do NOT set SPLITTING_REF=project. It is first order once gamma > 0 (see
 # symmetric_splitting.jl), so the reference will not be converged and every
