@@ -320,6 +320,13 @@ println()
 #                       2.06 per doubling, ~1.4e-8 per step, reaching 1.06e-5.
 #   flat or sqrt(k0) -> round-off. Nothing to fix.
 #
+# NOTE: round-off accumulating over k0 steps is ALSO linear in k0, so the
+# exponent alone cannot distinguish the two cases -- the magnitude decides. The
+# flag below therefore requires BOTH k0^~1 growth AND a per-step error above
+# 1e-12. Without that second condition it fires on a perfectly healthy run: the
+# post-fix log showed k0^1.03, k0^1.07 and k0^0.99 at per-step levels of 2e-14
+# to 5e-14, i.e. ~4e-16 per gate, which is machine precision.
+#
 # This matters for the choice of gold reference. For a converged scheme of order
 # p the Trotter error falls as k0^-p while THIS error grows as k0^1, so if the
 # per-step number is large the best reference is the SMALLEST Trotter-converged
@@ -338,7 +345,7 @@ for sc in schemes
     print("  " * rpad(nm, 14))
     for k in k0s; print(rpad(@sprintf("%.2e", d[k]), 12)); end
     @printf(" |     %.2e      | k0^%.2f %s\n", hi / k0s[end], growth,
-            growth > 0.8 ? "<- COHERENT: suspect the cutoff" : "")
+            (growth > 0.8 && hi / k0s[end] > 1e-12) ? "<- COHERENT: suspect the cutoff" : "")
 end
 @printf("\n  cutoff in use = %.1e  ->  permitted state error per truncation = %.1e\n",
         ct, sqrt(ct))
