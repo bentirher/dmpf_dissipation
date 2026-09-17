@@ -98,9 +98,12 @@ t_of(th)  = k*dt_of(th)
 function run_theta()
     rows = ["n,k,theta,p,dt,t,gamma_over_J,S_op,chi_mpdo,linkdim,trace,sat_mpdo," *
             "S_traj_mean,S_traj_p95,chi_traj_mean,chi_traj_sem,chi_traj_max,sat_traj,wall_s"]
-    @printf("%7s %8s %8s | %8s %9s %6s | %8s %9s | %s\n",
-            "theta","dt","t","S_op","chi_MPDO","sat","S_traj","chi_traj","")
-    println("-"^86)
+    # BOTH saturation flags. The first version printed only the MPDO's, and the
+    # n=24 runs came back with chi_traj pinned at exactly 256 = MAXDIM without
+    # anything in the table saying so.
+    @printf("%7s %8s %8s | %8s %9s %4s | %8s %9s %4s\n",
+            "theta","dt","t","S_op","chi_MPDO","sat","S_traj","chi_traj","sat")
+    println("-"^80)
     for th in thetas
         c = circuit_cost_point(n, th, pfix, k; cutoff=cutoff, maxdim=maxdim,
                                excited=excited)
@@ -109,9 +112,9 @@ function run_theta()
                                         verbose=false)
         f = e.series[end]
         gJ = pfix > 0 ? (-log(1-pfix)/dt_of(th))/JREF : 0.0
-        @printf("%7.4f %8.4f %8.3f | %8.4f %9d %6s | %8.4f %9.1f\n",
+        @printf("%7.4f %8.4f %8.3f | %8.4f %9d %4s | %8.4f %9.1f %4s\n",
                 th, dt_of(th), t_of(th), c.S_op, c.chi, c.saturated ? "!" : " ",
-                f.S_mean, f.chi_mean); flush(stdout)
+                f.S_mean, f.chi_mean, f.saturated ? "!!" : " "); flush(stdout)
         push!(rows, join([n,k,@sprintf("%.6f",th),@sprintf("%.6f",pfix),
             @sprintf("%.6f",dt_of(th)),@sprintf("%.6f",t_of(th)),@sprintf("%.6f",gJ),
             @sprintf("%.8f",c.S_op),c.chi,c.linkdim,@sprintf("%.8f",c.trace),c.saturated,
@@ -129,20 +132,22 @@ function run_fidelity()
     # Small n on purpose: the reference needs KREF steps, and Trotter error is a
     # short-range property, so n=8 is representative and n=8 MPDO is EXACT
     # (Liouville ceiling 4^4 = 256).
-    rows = ["n,k,kref,theta,p,dt,t,infidelity,S_op,chi_mpdo,sat"]
+    rows = ["n,k,kref,theta,p,dt,t,infidelity_dZ,infidelity_HS,S_op,chi_mpdo,sat"]
     @printf("reference: %d steps for the same (J*t, gamma*t)\n\n", kref)
-    @printf("%7s %8s %8s | %12s | %8s %9s\n","theta","dt","t","infidelity","S_op","chi")
-    println("-"^62)
+    @printf("%7s %8s %8s | %11s %11s | %8s %9s\n",
+            "theta","dt","t","max|dZ|","HS dist","S_op","chi")
+    println("-"^72)
     for th in thetas
-        inf, _, _ = trotter_infidelity(n, th, pfix, k; k_ref=kref, cutoff=cutoff,
-                                       maxdim=maxdim, excited=excited)
+        infz, infhs, _, _ = trotter_infidelity(n, th, pfix, k; k_ref=kref,
+                                cutoff=cutoff, maxdim=maxdim, excited=excited)
         c = circuit_cost_point(n, th, pfix, k; cutoff=cutoff, maxdim=maxdim,
                                excited=excited)
-        @printf("%7.4f %8.4f %8.3f | %12.3e | %8.4f %9d\n",
-                th, dt_of(th), t_of(th), inf, c.S_op, c.chi); flush(stdout)
+        @printf("%7.4f %8.4f %8.3f | %11.3e %11.3e | %8.4f %9d\n",
+                th, dt_of(th), t_of(th), infz, infhs, c.S_op, c.chi); flush(stdout)
         push!(rows, join([n,k,kref,@sprintf("%.6f",th),@sprintf("%.6f",pfix),
             @sprintf("%.6f",dt_of(th)),@sprintf("%.6f",t_of(th)),
-            @sprintf("%.6e",inf),@sprintf("%.8f",c.S_op),c.chi,c.saturated],","))
+            @sprintf("%.6e",infz),@sprintf("%.6e",infhs),
+            @sprintf("%.8f",c.S_op),c.chi,c.saturated],","))
     end
     fpath = joinpath(outdir,"fidelity_n$(n)$(sfx).csv")
     write(fpath, join(rows,"\n")*"\n"); @printf("\nwrote %s\n", fpath)
@@ -155,15 +160,17 @@ end
 function run_damping()
     rows = ["n,k,theta,p,total_damping,S_op,chi_mpdo,sat_mpdo,S_traj_mean,chi_traj_mean,chi_traj_sem"]
     @printf("theta=%.4f fixed\n\n", thetafx)
-    @printf("%8s %14s | %8s %9s | %8s %9s\n","p","1-(1-p)^k","S_op","chi_MPDO","S_traj","chi_traj")
-    println("-"^62)
+    @printf("%8s %14s | %8s %9s %4s | %8s %9s %4s\n",
+            "p","1-(1-p)^k","S_op","chi_MPDO","sat","S_traj","chi_traj","sat")
+    println("-"^72)
     for pp in plist
         c = circuit_cost_point(n, thetafx, pp, k; cutoff=cutoff, maxdim=maxdim, excited=excited)
         e = circuit_trajectory_ensemble(n, thetafx, pp, k, ntraj; cutoff=1e-10,
                                         maxdim=maxdim, excited=excited, verbose=false)
         f = e.series[end]; tot = 1-(1-pp)^k
-        @printf("%8.4f %14.4f | %8.4f %9d | %8.4f %9.1f\n",
-                pp, tot, c.S_op, c.chi, f.S_mean, f.chi_mean); flush(stdout)
+        @printf("%8.4f %14.4f | %8.4f %9d %4s | %8.4f %9.1f %4s\n",
+                pp, tot, c.S_op, c.chi, c.saturated ? "!" : " ",
+                f.S_mean, f.chi_mean, f.saturated ? "!!" : " "); flush(stdout)
         push!(rows, join([n,k,@sprintf("%.6f",thetafx),@sprintf("%.6f",pp),
             @sprintf("%.6f",tot),@sprintf("%.8f",c.S_op),c.chi,c.saturated,
             @sprintf("%.8f",f.S_mean),@sprintf("%.4f",f.chi_mean),
@@ -178,17 +185,17 @@ function run_scaling()
     rows = ["n,k,theta,p,S_op,chi_mpdo,sat_mpdo,ceiling," *
             "S_traj_mean,chi_traj_mean,chi_traj_sem,chi3_traj,chi_traj_max,sat_traj,wall_s"]
     @printf("theta=%.4f  p=%.4f  k=%d\n\n", thetafx, pfix, k)
-    @printf("%5s | %8s %10s %6s | %8s %10s %10s\n",
-            "n","S_op","chi_MPDO","sat","S_traj","chi_traj","wall/traj")
-    println("-"^70)
+    @printf("%5s | %8s %10s %4s | %8s %10s %4s %10s\n",
+            "n","S_op","chi_MPDO","sat","S_traj","chi_traj","sat","wall/traj")
+    println("-"^76)
     for nn in nlist
         c = circuit_cost_point(nn, thetafx, pfix, k; cutoff=cutoff, maxdim=maxdim, excited=excited)
         e = circuit_trajectory_ensemble(nn, thetafx, pfix, k, ntraj; cutoff=1e-10,
                                         maxdim=maxdim, excited=excited, verbose=false)
         f = e.series[end]
-        @printf("%5d | %8.4f %10d %6s | %8.4f %10.1f %10.1f\n",
+        @printf("%5d | %8.4f %10d %4s | %8.4f %10.1f %4s %10.1f\n",
                 nn, c.S_op, c.chi, c.saturated ? "!" : " ", f.S_mean, f.chi_mean,
-                mean(e.walltime)); flush(stdout)
+                f.saturated ? "!!" : " ", mean(e.walltime)); flush(stdout)
         push!(rows, join([nn,k,@sprintf("%.6f",thetafx),@sprintf("%.6f",pfix),
             @sprintf("%.8f",c.S_op),c.chi,c.saturated,state_bond_dim_ceiling(nn),
             @sprintf("%.8f",f.S_mean),@sprintf("%.4f",f.chi_mean),
