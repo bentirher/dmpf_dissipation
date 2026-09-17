@@ -117,17 +117,30 @@ summary = ["n,family,r,chi_ceiling,chi_rho_exact,ref_selferr,cond_N,lam_min,sing
 # Smallest grid chi whose error is at or below `target`; linear interpolation in
 # log(chi) between the bracketing points, so the answer is not quantised to the
 # grid. Returns Inf when the target is never reached on the grid.
+# THE FIX: points with err == 0 are the ceiling run scored against ITSELF, not a
+# measurement. Including them put log(0) = -Inf in the denominator, driving the
+# interpolation weight to 0 and returning the LOWER bracket -- so chi_direct*
+# always came back as the last grid point before the ceiling (128.0 at both n=8
+# and n=10, for a target three orders below anything actually achieved there).
+# Zero-error points are dropped; if the target is reached only there, the true
+# chi* is at or just below the ceiling and the grid cannot resolve it, which is
+# reported as -1 rather than a fabricated number.
 function chi_star(chis, errs, target)
-    for i in eachindex(chis)
+    idx = [i for i in eachindex(chis) if errs[i] > 0]
+    for (j, i) in enumerate(idx)
         if errs[i] <= target
-            i == 1 && return Float64(chis[i])
-            (errs[i-1] <= target || !isfinite(errs[i-1])) && return Float64(chis[i])
-            f = (log(errs[i-1]) - log(target)) / (log(errs[i-1]) - log(errs[i]))
-            return exp(log(chis[i-1]) + f * (log(chis[i]) - log(chis[i-1])))
+            j == 1 && return Float64(chis[i])
+            ip = idx[j-1]
+            errs[ip] <= target && return Float64(chis[i])
+            f = (log(errs[ip]) - log(target)) / (log(errs[ip]) - log(errs[i]))
+            return exp(log(chis[ip]) + f * (log(chis[i]) - log(chis[ip])))
         end
     end
+    # target met only at a zero-error (ceiling) point?
+    any(i -> errs[i] <= 0, eachindex(errs)) && return -1.0
     return Inf
 end
+fmt_chi(x) = x < 0 ? "ceil-only" : (isfinite(x) ? @sprintf("%.1f", x) : ">grid")
 
 for n in n_list
     ceil_n = state_max_bond_dim(n)
@@ -152,12 +165,20 @@ for n in n_list
     # Observables chosen to be COMPARABLE ACROSS n: the middle site, the middle
     # bond, and the mean over all sites. Site-indexed observables would compare
     # different physics at different n.
-    obs_names = ["Z_mid", "ZZ_mid", "Z_mean"]
-    obs_mps   = [z_observable(lsites, mid), zz_observable(lsites, mid, mid + 1)]
+    # Single-observable errors pass through zero as the sign flips, which made
+    # err_direct non-monotone by an order of magnitude between adjacent chi
+    # (n=8: 1.4e-1, 2.6e-1, 4.9e-2, 9.4e-2, ...). Averaging |error| over all n
+    # single-site Z damps that, at essentially no cost since the Z operators are
+    # built anyway. Z_MAE is the metric to trust for chi*; Z_mid is kept for
+    # continuity with the earlier runs.
     all_z     = [z_observable(lsites, m) for m in 1:n]
+    obs_mps   = [z_observable(lsites, mid), zz_observable(lsites, mid, mid + 1)]
+    obs_names = vcat(["Z_mid", "ZZ_mid", "Z_mean"], ["Z$m" for m in 1:n])
     n_obs     = length(obs_names)
-    meas(rho) = [real(expval(obs_mps[1], rho)), real(expval(obs_mps[2], rho)),
-                 sum(real(expval(z, rho)) for z in all_z) / n]
+    meas(rho) = vcat([real(expval(obs_mps[1], rho)), real(expval(obs_mps[2], rho)),
+                      sum(real(expval(z, rho)) for z in all_z) / n],
+                     [real(expval(z, rho)) for z in all_z])
+    zrange    = 4:(3 + n)      # the per-site Z rows, averaged into Z_MAE
 
     # ---- exact pass ---------------------------------------------------------
     t0 = time()
@@ -234,8 +255,15 @@ for n in n_list
     # ---- chi sweep ----------------------------------------------------------
     # rho_ref and the candidate pool are evolved ONCE per chi and shared by every
     # family, so extra families cost only linear algebra on r x r matrices.
+    # err_best_single -- the error from the BEST SINGLE Trotter circuit, i.e. the
+    # answer with ZERO classical computation -- is printed alongside. It is the
+    # bar that actually matters, and it was missing from the previous table.
+    # With sum(c)=1 and |c| bounded, any normalised combination of candidates
+    # lands near the candidates themselves, so DMPF cannot do much WORSE than
+    # this no matter how bad the coefficients are; beating it is the real test.
     println("   chi | eps_chi  | err_direct | " *
-            join([rpad("err_dmpf[" * fam_name(f) * "]", 15) for f in families]))
+            join([rpad("err_dmpf[" * fam_name(f) * "]", 15) for f in families]) *
+            "| free baseline")
     println("  " * "-"^(30 + 15 * length(families)))
 
     for chi in grid
@@ -277,7 +305,8 @@ for n in n_list
             end
             line *= @sprintf("%.4e%s   ", F.eh[end], sc.singular ? "*" : " ")
         end
-        println(line, chi == ceil_n ? " (exact)" : "")
+        println(line, @sprintf("| %.4e", fam[fam_name(families[1])].es[1]),
+                chi == ceil_n ? "  (exact)" : "")
         flush(stdout)
     end
     println("  (* = N was numerically singular at this chi: the coefficients are noise)")
@@ -296,17 +325,15 @@ for n in n_list
         r32 = i32 === nothing ? NaN : F.ed[i32] / max(F.eh[i32], 1e-300)
         r64 = i64 === nothing ? NaN : F.ed[i64] / max(F.eh[i64], 1e-300)
         @printf("  %-14s %.4e | %-10s %-10s %-8s | %9.3f %9.3f\n", nm, target,
-                isfinite(csd) ? @sprintf("%.1f", csd) : ">grid",
-                isfinite(csh) ? @sprintf("%.1f", csh) : ">grid",
-                (isfinite(csd) && isfinite(csh)) ? @sprintf("%.2fx", csd / csh) : "n/a",
+                fmt_chi(csd), fmt_chi(csh),
+                (csd > 0 && csh > 0 && isfinite(csd) && isfinite(csh)) ? @sprintf("%.2fx", csd / csh) : "n/a",
                 r32, r64)
         push!(summary, @sprintf("%d,%s,%d,%d,%d,%.6e,%.6e,%.6e,%s,%.8e,%.8e,%.8e,%.8e,%s,%s,%s,%.6f,%.6f",
                                 n, nm, F.r, ceil_n, e_ref.chi, ref_selferr,
                                 F.sol.cond, F.sol.lam_min, F.sol.singular, F.sol.E_mpf,
                                 F.ep[1], F.es[1], target,
-                                isfinite(csd) ? @sprintf("%.4f", csd) : "Inf",
-                                isfinite(csh) ? @sprintf("%.4f", csh) : "Inf",
-                                (isfinite(csd) && isfinite(csh)) ? @sprintf("%.4f", csd / csh) : "NaN",
+                                fmt_chi(csd), fmt_chi(csh),
+                                (csd > 0 && csh > 0 && isfinite(csd) && isfinite(csh)) ? @sprintf("%.4f", csd / csh) : "NaN",
                                 r32, r64))
     end
     println()
