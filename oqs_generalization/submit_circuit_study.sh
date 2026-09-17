@@ -2,8 +2,11 @@
 # The whole hardware-aware study, one driver, selected by MODE.
 #
 #   sbatch --array=0-2,5,6 submit_circuit_study.sh  # STEP 2: theta + fidelity + init state  [DONE]
-#   sbatch --array=7-9     submit_circuit_study.sh  # STEP 2b: larger n, and fidelity for the chosen init state
+#   sbatch --array=7-9     submit_circuit_study.sh  # STEP 2b  [DONE -- but n=24 was CENSORED]
+#   sbatch --array=10,11   submit_circuit_study.sh  # STEP 2c: uncensor n=24, and the HS fidelity
+#   sbatch --array=12-14   submit_circuit_study.sh  # MPDO on its own terms, no prior context needed
 #   sbatch --array=3,4     submit_circuit_study.sh  # STEPS 3-4 at the chosen (theta, init)
+#   sbatch --array=16,17   submit_circuit_study.sh  # STANDALONE: MPDO vs trajectories, untruncated
 #   sbatch --array=3   submit_circuit_study.sh    # STEP 3: damping sweep
 #   sbatch --array=4   submit_circuit_study.sh    # STEP 4: n scaling
 #
@@ -27,7 +30,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --time=06:00:00
+#SBATCH --time=11:00:00
 #SBATCH --output=logs/cktstudy_%A_%a.out
 #SBATCH --error=logs/cktstudy_%A_%a.err
 mkdir -p logs
@@ -103,6 +106,78 @@ case $SLURM_ARRAY_TASK_ID in
   9) export MODE=fidelity N=8 MAXDIM=256 KREF=1000 EXCITED=random
      export OUTDIR=ckt_fidelity_rand TAG=n8rand ;;
 
+  # --- STEP 2c: REDO n=24 WITHOUT THE CAP -----------------------------------
+  # Tasks 7 and 8 returned chi_traj = 256.0 exactly at eleven of seventeen
+  # angles: that is MAXDIM, not a measurement, and the flat theta-plateau there
+  # is clipping rather than physics. The printed table only showed the MPDO's
+  # saturation flag, which is now fixed (a "!!" in the chi_traj column).
+  #
+  # MAXDIM=4096 with a narrowed theta grid around the plateau. Cost scales as
+  # chi^3, but k=10 is only 1/24 of the 240-step continuum runs, so this is
+  # ~30 min rather than the 5.6 h its continuum counterpart took.
+  10) export MODE=theta N=24 MAXDIM=4096 NTRAJ=64 EXCITED=random
+      export THETAS=0.50,0.65,0.80,0.95,1.10,1.25,1.40,1.90,2.10,2.40
+      export OUTDIR=ckt_theta_n24_big TAG=n24big ;;
+
+  # Fidelity again, now reporting BOTH max|dZ| and the Hilbert-Schmidt distance.
+  # max|dZ| depends on the scale of the observable and hence on the initial
+  # state: Neel starts every <Z_j> at +/-1, a random product state starts them
+  # spread over [-1,1]. Part of the apparent 0.137 -> 0.062 improvement from
+  # Neel to random is the observable shrinking, not the circuit improving. The
+  # HS distance is a property of the states and is comparable across them.
+  11) export MODE=fidelity N=8 MAXDIM=256 KREF=1000 EXCITED=random
+      export OUTDIR=ckt_fidelity_hs TAG=hs ;;
+
+  # --- THE MPDO ON ITS OWN TERMS -------------------------------------------
+  # These three make the MPDO case self-contained: nothing here relies on the
+  # earlier continuous-time study, so the result can be shown to someone seeing
+  # the project for the first time.
+  #
+  # "Uncapped" needs care. The MPDO ceiling is 4^(n/2): 256 at n=8, 4096 at
+  # n=12, 65536 at n=16, 1.7e7 at n=24. Truly uncapped is impossible above
+  # n~12 -- but at n<=12 setting maxdim TO the ceiling means no truncation at
+  # all, so those points are EXACT and carry no caveat.
+  #
+  # 12: exact MPDO vs n. MAXDIM=0 means "use 4^(n/2)". Both routes, same points.
+  12) export MODE=scaling NLIST=6,8,10,12 THETA=0.95 MAXDIM=0 NTRAJ=128 EXCITED=random
+      export OUTDIR=ckt_mpdo_exact TAG=exact ;;
+  # 13: at n=16 the ceiling (65536) is out of reach, so show directly that the
+  # MPDO is NOT converged: chi tracks the ladder instead of flattening, while
+  # the trajectory chi at the same point sits far below any cap. That contrast
+  # IS the argument, measured in one table.
+  13) export MODE=mpdoladder N=16 THETA=0.95 MAXDIM=256 NTRAJ=64 EXCITED=random
+      export MAXDIMS=128,256,512,1024,2048,4096
+      export OUTDIR=ckt_mpdo_ladder TAG=n16 ;;
+  # 14: the theta curve with NO truncation anywhere, at n=12. A clean
+  # self-contained figure: both methods, exact, across the full angle range.
+  14) export MODE=theta N=12 MAXDIM=0 NTRAJ=128 EXCITED=random
+      export OUTDIR=ckt_theta_exact TAG=n12exact ;;
+
+  # --- STANDALONE: MPDO vs TRAJECTORIES, BOTH UNTRUNCATED -------------------
+  #
+  # A self-contained head-to-head that presumes nothing from the earlier
+  # continuous-time study. Small n is the POINT, not a limitation: the
+  # vectorised density matrix is an MPS of local dimension 4, so its bond
+  # dimension cannot exceed 4^(n/2) -- 256 at n=8, 1024 at n=10, 4096 at n=12.
+  # Setting MAXDIM to that ceiling makes the MPDO EXACT, and the trajectory
+  # route (bounded by 2^(n/2) per system cut) is exact too. Every row is then a
+  # measurement rather than a bound, which the large-n runs can never be.
+  #
+  # MAXDIM only costs when it is REACHED, so pinning it at the ceiling is free
+  # whenever the physical chi stays below -- which at k=10 it does.
+  #
+  # Task 12 is the table: agreement on <Z_j> in units of the trajectory standard
+  # error, chi_MPDO vs chi_traj, the ratio against chi_traj^2 (= 1 exactly if
+  # rho stayed pure), and the cost ratio with N taken from the measured variance.
+  # Task 13 is the supporting convergence ladder at a single n, showing what
+  # "censored" looks like when maxdim is set below the ceiling -- worth having
+  # next to task 12 so the exactness claim is visibly earned.
+  16) export MODE=headtohead NLIST=4,6,8,10,12 THETA=0.95 MAXDIM=4096 NTRAJ=512
+      export EXCITED=random OUTDIR=ckt_headtohead TAG=h2h ;;
+  17) export MODE=mpdoladder N=10 THETA=0.95 MAXDIM=1024 NTRAJ=256
+      export MAXDIMS=32,64,128,256,512,1024 EXCITED=random
+      export OUTDIR=ckt_mpdoladder_n10 TAG=n10 ;;
+
   # --- STEP 3: how much damping can the circuit afford? ---------------------
   # THETA=0.95 and EXCITED=random come from Step 2: the plateau maximum, away
   # from the pi/2 free-fermion point, with infidelity ~0.14 (Neel reference;
@@ -110,13 +185,13 @@ case $SLURM_ARRAY_TASK_ID in
   # theta=pi/2 the |+> circuit is Clifford on a stabilizer state, and while 0.95
   # is not pi/2 it is better not to have a Gottesman-Knill argument anywhere
   # near the operating point.
-  3) export MODE=damping N=20 THETA=0.95 MAXDIM=256 NTRAJ=128 EXCITED=random
+  3) export MODE=damping N=20 THETA=0.95 MAXDIM=2048 NTRAJ=128 EXCITED=random
      export PLIST=0.0,0.005,0.01,0.02,0.035,0.05,0.08,0.12,0.18,0.25
      export OUTDIR=ckt_damping TAG=n20 ;;
 
   # --- STEP 4: n scaling at the chosen (theta, p) --------------------------
   # THETA and P must both be replaced with the Step 2 / Step 3 optima first.
-  4) export MODE=scaling NLIST=8,12,16,20,24,28,32 THETA=0.95 MAXDIM=256 NTRAJ=64 EXCITED=random
+  4) export MODE=scaling NLIST=8,12,16,20,24,28,32 THETA=0.95 MAXDIM=4096 NTRAJ=64 EXCITED=random
      export OUTDIR=ckt_scaling TAG=opt ;;
 esac
 

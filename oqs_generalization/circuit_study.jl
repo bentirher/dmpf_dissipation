@@ -11,6 +11,14 @@
 #                  Where does it stop being physics?
 #   MODE=damping   Step 3.  Sweep p at the chosen theta.
 #   MODE=scaling   Step 4.  Sweep n at the chosen (theta, p).
+#   MODE=headtohead  A self-contained MPDO-vs-trajectory comparison at small n,
+#                  where BOTH methods can be run UNTRUNCATED. Stands alone: it
+#                  does not ask the reader to accept any earlier result.
+#   MODE=mpdoladder         Is the MPDO converged in maxdim, or reporting the
+#                           cap back at us? Run at one (n, theta, p).
+#
+# MAXDIM=0 in theta/scaling mode means the EXACT Liouville ceiling 4^(n/2):
+# no truncation, no caveat. Affordable to n=12 (ceiling 4096).
 #
 # -----------------------------------------------------------------------------
 # PARAMETERISATION (settled in Step 1)
@@ -93,6 +101,13 @@ end
 dt_of(th) = th/(2*JREF)
 t_of(th)  = k*dt_of(th)
 
+# MAXDIM=0 means "no truncation at all": use the exact Liouville ceiling
+# 4^(n/2) for this n. That is affordable only for n <= 12 (256 / 1024 / 4096),
+# but where it is affordable the MPDO result carries no caveat whatsoever --
+# it is the exact cost of the circuit, not a lower bound.
+exact_ceiling(nn) = state_bond_dim_ceiling(nn)
+md_for(nn) = maxdim == 0 ? exact_ceiling(nn) : maxdim
+
 
 # =============================================================================
 function run_theta()
@@ -105,10 +120,10 @@ function run_theta()
             "theta","dt","t","S_op","chi_MPDO","sat","S_traj","chi_traj","sat")
     println("-"^80)
     for th in thetas
-        c = circuit_cost_point(n, th, pfix, k; cutoff=cutoff, maxdim=maxdim,
+        c = circuit_cost_point(n, th, pfix, k; cutoff=cutoff, maxdim=md_for(n),
                                excited=excited)
         e = circuit_trajectory_ensemble(n, th, pfix, k, ntraj; cutoff=1e-10,
-                                        maxdim=maxdim, excited=excited,
+                                        maxdim=max(md_for(n), 1024), excited=excited,
                                         verbose=false)
         f = e.series[end]
         gJ = pfix > 0 ? (-log(1-pfix)/dt_of(th))/JREF : 0.0
@@ -184,14 +199,17 @@ end
 function run_scaling()
     rows = ["n,k,theta,p,S_op,chi_mpdo,sat_mpdo,ceiling," *
             "S_traj_mean,chi_traj_mean,chi_traj_sem,chi3_traj,chi_traj_max,sat_traj,wall_s"]
-    @printf("theta=%.4f  p=%.4f  k=%d\n\n", thetafx, pfix, k)
+    @printf("theta=%.4f  p=%.4f  k=%d%s\n\n", thetafx, pfix, k,
+            maxdim == 0 ? "   [MPDO EXACT: maxdim = 4^(n/2), no truncation]" : "")
     @printf("%5s | %8s %10s %4s | %8s %10s %4s %10s\n",
             "n","S_op","chi_MPDO","sat","S_traj","chi_traj","sat","wall/traj")
     println("-"^76)
     for nn in nlist
-        c = circuit_cost_point(nn, thetafx, pfix, k; cutoff=cutoff, maxdim=maxdim, excited=excited)
+        c = circuit_cost_point(nn, thetafx, pfix, k; cutoff=cutoff,
+                               maxdim=md_for(nn), excited=excited)
         e = circuit_trajectory_ensemble(nn, thetafx, pfix, k, ntraj; cutoff=1e-10,
-                                        maxdim=maxdim, excited=excited, verbose=false)
+                                        maxdim=max(md_for(nn), 1024),
+                                        excited=excited, verbose=false)
         f = e.series[end]
         @printf("%5d | %8.4f %10d %4s | %8.4f %10.1f %4s %10.1f\n",
                 nn, c.S_op, c.chi, c.saturated ? "!" : " ", f.S_mean, f.chi_mean,
@@ -208,10 +226,132 @@ function run_scaling()
 end
 
 # =============================================================================
+function run_mpdoladder()
+    # Is the MPDO converged, or is it just reporting the cap back at us?
+    #
+    # chi is read off the STORED Schmidt spectrum, so it can never exceed
+    # maxdim. If chi tracks the ladder, the measurement is censored and the only
+    # honest statement is "chi_MPDO > (largest rung)". If it flattens, that
+    # value is the real requirement. S_op converges in maxdim far faster than
+    # chi does, so expect S_op to settle while chi keeps climbing.
+    #
+    # The trajectory route is run once at the top of the ladder for contrast.
+    mds = parse.(Int, split(getenv("MAXDIMS","128,256,512,1024,2048"),","))
+    ceil_n = exact_ceiling(n)
+    @printf("n=%d theta=%.4f p=%.4f k=%d   exact ceiling 4^%d = %d\n\n",
+            n, thetafx, pfix, k, n÷2, ceil_n)
+    rows = ["n,k,theta,p,maxdim,ceiling,S_op,chi_mpdo,linkdim,saturated,exact"]
+    println("   maxdim |     S_op   chi_MPDO   linkdim | status")
+    println("-"^62)
+    for md in mds
+        md > ceil_n && (println("   (skipping $md: above the exact ceiling $ceil_n)"); continue)
+        c = circuit_cost_point(n, thetafx, pfix, k; cutoff=cutoff, maxdim=md,
+                               excited=excited)
+        st = md >= ceil_n ? "EXACT" : (c.saturated ? "censored: chi > $(c.chi)" : "converged?")
+        @printf("%9d | %8.4f %10d %9d | %s\n", md, c.S_op, c.chi, c.linkdim, st)
+        flush(stdout)
+        push!(rows, join([n,k,@sprintf("%.6f",thetafx),@sprintf("%.6f",pfix),md,ceil_n,
+            @sprintf("%.8f",c.S_op),c.chi,c.linkdim,c.saturated,md>=ceil_n],","))
+    end
+    e = circuit_trajectory_ensemble(n, thetafx, pfix, k, ntraj; cutoff=1e-10,
+                                    maxdim=4096, excited=excited, verbose=false)
+    f = e.series[end]
+    @printf("\n  trajectory route at the same point: chi = %.1f +/- %.1f  (maxdim 4096, %s)\n",
+            f.chi_mean, f.chi_sem, f.saturated ? "SATURATED" : "not saturated")
+    fpath = joinpath(outdir,"mpdoladder_n$(n)$(sfx).csv")
+    write(fpath, join(rows,"\n")*"\n"); @printf("wrote %s\n", fpath)
+end
+
+# =============================================================================
+function run_headtohead()
+    # WHY SMALL n IS THE POINT, NOT A LIMITATION.
+    #
+    # The vectorised density matrix is an MPS of local dimension 4, so its bond
+    # dimension cannot exceed 4^(n/2): 256 at n=8, 1024 at n=10, 4096 at n=12.
+    # Setting maxdim to that ceiling makes the MPDO EXACT -- no truncation at
+    # all. The trajectory route is bounded by 2^(n/2) per system cut, far
+    # smaller, and is likewise exact here. So this table is a direct, untruncated
+    # comparison of the two methods on identical circuits, with no extrapolation
+    # and no censored numbers anywhere. That is something the large-n runs can
+    # never give, because there both methods have to be truncated.
+    #
+    # maxdim binds cost only when it is REACHED, so setting it to the ceiling is
+    # free whenever the physical chi stays below -- which at k=10 it does.
+    #
+    # Three things come out:
+    #   1. the two methods agree on the physics (<Z_j>, checked in units of the
+    #      trajectory standard error) -- the trust-building row;
+    #   2. chi_MPDO vs chi_traj, and their ratio against chi_traj^2, which is
+    #      what the relation would be if rho stayed pure (the operator Schmidt
+    #      values of |psi><psi| are the pairwise products of those of |psi>);
+    #   3. the honest cost ratio  chi_MPDO^3 / (N * <chi_traj^3>), with N taken
+    #      from the measured per-trajectory variance rather than assumed.
+    rows = ["n,k,theta,p,ceiling_mpdo,maxdim_used,exact_mpdo,S_op,chi_mpdo," *
+            "S_traj,chi_traj_mean,chi_traj_sem,chi_traj_max,chi3_traj,sat_traj," *
+            "chi_ratio,chi_over_chitraj_sq,Ntraj_needed,cost_mpdo,cost_traj," *
+            "mpdo_over_traj,max_dZ,max_dZ_in_sem,wall_mpdo_s,wall_traj_s"]
+    @printf("theta=%.4f  p=%.4f  k=%d  excited=%s  target SEM on <Z> = 0.01\n\n",
+            thetafx, pfix, k, excited)
+    @printf("%4s | %9s %6s | %8s %8s | %9s %9s | %10s | %8s\n",
+            "n","ceil","exact","chi_MPDO","chi_traj","ratio","/chi_t^2",
+            "cost ratio","dZ[sem]")
+    println("-"^92)
+    for nn in nlist
+        ceil_n = 4^min(nn÷2, nn-nn÷2)
+        md = min(ceil_n, maxdim)
+        wm = @elapsed c = circuit_cost_point(nn, thetafx, pfix, k; cutoff=cutoff,
+                                             maxdim=md, excited=excited)
+        wt = @elapsed e = circuit_trajectory_ensemble(nn, thetafx, pfix, k, ntraj;
+                                cutoff=1e-12, maxdim=md, excited=excited,
+                                verbose=false)
+        f = e.series[end]
+        zm = mpdo_expectation_Z_all(nn, thetafx, pfix, k; cutoff=cutoff,
+                                    maxdim=md, excited=excited)
+        dz  = maximum(abs.(f.z_all .- zm))
+        dzs = maximum(abs.(f.z_all .- zm) ./ max.(f.z_all_sem, 1e-12))
+        N   = Ntraj_for(e.series, 0.01)
+        cost_m = float(c.chi)^3
+        cost_t = N * f.chi3_mean
+        exact  = md >= ceil_n && !c.saturated
+        @printf("%4d | %9d %6s | %8d %8.1f | %9.2f %9.2f | %10.3e | %8.1f\n",
+                nn, ceil_n, exact ? "yes" : "NO", c.chi, f.chi_mean,
+                c.chi/max(f.chi_mean,1e-9), c.chi/max(f.chi_mean^2,1e-9),
+                cost_m/max(cost_t,1e-300), dzs); flush(stdout)
+        push!(rows, join([nn,k,@sprintf("%.6f",thetafx),@sprintf("%.6f",pfix),
+            ceil_n, md, exact, @sprintf("%.8f",c.S_op), c.chi,
+            @sprintf("%.8f",f.S_mean), @sprintf("%.4f",f.chi_mean),
+            @sprintf("%.4f",f.chi_sem), @sprintf("%.0f",f.chi_max),
+            @sprintf("%.6e",f.chi3_mean), f.saturated,
+            @sprintf("%.4f",c.chi/max(f.chi_mean,1e-9)),
+            @sprintf("%.4f",c.chi/max(f.chi_mean^2,1e-9)), N,
+            @sprintf("%.6e",cost_m), @sprintf("%.6e",cost_t),
+            @sprintf("%.6e",cost_m/max(cost_t,1e-300)),
+            @sprintf("%.3e",dz), @sprintf("%.2f",dzs),
+            @sprintf("%.2f",wm), @sprintf("%.2f",wt)],","))
+    end
+    fpath = joinpath(outdir,"headtohead$(sfx).csv")
+    write(fpath, join(rows,"\n")*"\n"); @printf("\nwrote %s\n", fpath)
+    println("\nREADING IT:")
+    println("  exact=yes   -> neither method was truncated; the row is a measurement,")
+    println("                 not a bound, and needs no caveat.")
+    println("  dZ[sem]     -> agreement on the physics, in trajectory standard errors.")
+    println("                 Should sit around 1-2. If it grows with n, suspect the")
+    println("                 simulation, not the methods.")
+    println("  /chi_t^2    -> chi_MPDO / chi_traj^2. Equals 1 when rho is pure, since")
+    println("                 the operator Schmidt values of |psi><psi| are the")
+    println("                 pairwise products. Below 1 means mixing is genuinely")
+    println("                 destroying correlations and helping the MPDO.")
+    println("  cost ratio  -> chi_MPDO^3 / (N*<chi_traj^3>), N from the measured")
+    println("                 variance. This is the number the method choice rests on.")
+end
+
+# =============================================================================
 if     mode == "theta";    run_theta()
+elseif mode == "mpdoladder"; run_mpdoladder()
 elseif mode == "fidelity"; run_fidelity()
 elseif mode == "damping";  run_damping()
 elseif mode == "scaling";  run_scaling()
-else error("MODE must be theta, fidelity, damping or scaling. Got '$mode'.")
+elseif mode == "headtohead"; run_headtohead()
+else error("MODE must be one of: theta, fidelity, damping, scaling, mpdoladder, headtohead. Got '$mode'.")
 end
 println("\n[stage] done"); flush(stdout)
