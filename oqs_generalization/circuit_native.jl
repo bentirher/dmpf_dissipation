@@ -313,11 +313,33 @@ real trade-off and it should be shown rather than asserted.
 function trotter_infidelity(n::Int, theta::Float64, p::Float64, k::Int;
                             k_ref::Int=1000, cutoff::Float64=1e-12,
                             maxdim::Int=1024, excited=:neel)
-    z  = mpdo_expectation_Z_all(n, theta, p, k; cutoff=cutoff, maxdim=maxdim,
-                                excited=excited)
-    zr = mpdo_expectation_Z_all(n, theta*k/k_ref, 1-(1-p)^(k/k_ref), k_ref;
-                                cutoff=cutoff, maxdim=maxdim, excited=excited)
-    return maximum(abs.(z .- zr)), z, zr
+    rho , ls  = mpdo_run(n, theta, p, k; cutoff=cutoff, maxdim=maxdim, excited=excited)
+    rhor, _   = mpdo_run(n, theta*k/k_ref, 1-(1-p)^(k/k_ref), k_ref;
+                         cutoff=cutoff, maxdim=maxdim, excited=excited)
+    idm = identity_vectorized_mps(ls)
+    rho  = rho  / inner(idm, rho)          # normalise both traces to 1
+    rhor = rhor / inner(idm, rhor)
+
+    z  = [real(inner(pauli_z_vectorized_mps(ls, j), rho))  for j in 1:n]
+    zr = [real(inner(pauli_z_vectorized_mps(ls, j), rhor)) for j in 1:n]
+    dz = maximum(abs.(z .- zr))
+
+    # HILBERT-SCHMIDT DISTANCE, ||rho - rho_ref||_2, expanded as
+    #     <<rho|rho>> + <<ref|ref>> - 2 Re <<rho|ref>>
+    # all three of which are plain MPS inner products.
+    #
+    # WHY THIS AND NOT JUST max|dZ|. The <Z> measure depends on the SCALE of the
+    # observable, which depends on the initial state: from Neel every <Z_j>
+    # starts at +/-1, from a random product state they start spread over
+    # [-1,1] and are typically smaller. The Neel run reported infidelity 0.137
+    # at theta=0.95 and the random run 0.062 -- but part of that gap is the
+    # observable shrinking, not the circuit becoming more faithful. The HS
+    # distance is a property of the states and is comparable across initial
+    # states. Normalised by ||rho_ref||_2 so it is dimensionless.
+    hs2 = real(inner(rho,rho)) + real(inner(rhor,rhor)) - 2*real(inner(rho,rhor))
+    hs  = sqrt(max(hs2, 0.0)) / sqrt(max(real(inner(rhor,rhor)), 1e-300))
+
+    return dz, hs, z, zr
 end
 
 
