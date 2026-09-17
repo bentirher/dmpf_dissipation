@@ -58,7 +58,6 @@ include(joinpath(@__DIR__,"vectorized_evolution.jl"))
 include(joinpath(@__DIR__,"trajectory_evolution.jl"))
 include(joinpath(@__DIR__,"circuit_native.jl"))
 println("[stage] load OK (threads = $(Threads.nthreads()))"); flush(stdout)
-BLAS.set_num_threads(1)
 
 mode    = getenv("MODE","theta")
 n       = parse(Int, getenv("N",16))
@@ -68,6 +67,26 @@ pfix    = parse(Float64, getenv("P",0.05))
 plist   = parse.(Float64, split(getenv("PLIST","0.0,0.01,0.02,0.05,0.10,0.15,0.25"),","))
 thetafx = parse(Float64, getenv("THETA",1.5708))
 maxdim  = parse(Int, getenv("MAXDIM",1024))
+# SEPARATE CAPS FOR THE TWO ROUTES.
+#
+# The MPDO is an MPS of local dimension 4, so a cap of X means SVDs of size
+# 4X. At n=24 with MAXDIM=4096 that is 16384 x 16384 -- about 4e12 flops per
+# SVD, 460 of them per theta point, with BLAS pinned to one thread. A single
+# theta point is then thousands of core-hours, which is why task 10 sat on its
+# first point for four hours looking hung.
+#
+# Raising the cap was meant for the TRAJECTORY route, which is an MPS of local
+# dimension 2 and was genuinely censored at 256. The MPDO does not need it: it
+# is known to lose by many orders of magnitude and is carried here for context.
+# So the two are capped independently, and the MPDO can be skipped outright.
+maxdim_mpdo = parse(Int, getenv("MAXDIM_MPDO", min(maxdim, 256)))
+maxdim_traj = parse(Int, getenv("MAXDIM_TRAJ", maxdim))
+skip_mpdo   = parse(Bool, getenv("SKIP_MPDO", false))
+blas_thr    = parse(Int, getenv("BLAS_THREADS", 1))
+# 1 thread suits trajectory work (many small independent problems). Raise it via
+# BLAS_THREADS for MPDO-dominated modes, where one big SVD is the whole job.
+# This call must come AFTER blas_thr is parsed.
+BLAS.set_num_threads(blas_thr)
 cutoff  = parse(Float64, getenv("CUTOFF",1e-12))
 ntraj   = parse(Int, getenv("NTRAJ",64))
 kref    = parse(Int, getenv("KREF",1000))
@@ -82,7 +101,10 @@ default_thetas = "0.1,0.2,0.35,0.5,0.65,0.8,0.95,1.1,1.25,1.4,1.5708,1.7,1.9,2.1
 thetas = parse.(Float64, split(getenv("THETAS", default_thetas),","))
 
 @printf("=== circuit study, MODE=%s ===\n", mode)
-@printf("k=%d  maxdim=%d  cutoff=%.1e  excited=%s  Ntraj=%d\n", k, maxdim, cutoff, excited, ntraj)
+@printf("k=%d  cutoff=%.1e  excited=%s  Ntraj=%d  BLAS threads=%d\n",
+        k, cutoff, excited, ntraj, blas_thr)
+@printf("maxdim: MPDO=%d  trajectory=%d%s\n", maxdim_mpdo, maxdim_traj,
+        skip_mpdo ? "   (MPDO SKIPPED)" : "")
 @printf("reference units for the printed (dt,t): J=%.4f  gamma=%.4f\n\n", JREF, GREF)
 flush(stdout)
 
@@ -154,8 +176,8 @@ function run_fidelity()
     println("-"^72)
     for th in thetas
         infz, infhs, _, _ = trotter_infidelity(n, th, pfix, k; k_ref=kref,
-                                cutoff=cutoff, maxdim=maxdim, excited=excited)
-        c = circuit_cost_point(n, th, pfix, k; cutoff=cutoff, maxdim=maxdim,
+                                cutoff=cutoff, maxdim=maxdim_mpdo, excited=excited)
+        c = circuit_cost_point(n, th, pfix, k; cutoff=cutoff, maxdim=maxdim_mpdo,
                                excited=excited)
         @printf("%7.4f %8.4f %8.3f | %11.3e %11.3e | %8.4f %9d\n",
                 th, dt_of(th), t_of(th), infz, infhs, c.S_op, c.chi); flush(stdout)
@@ -179,9 +201,11 @@ function run_damping()
             "p","1-(1-p)^k","S_op","chi_MPDO","sat","S_traj","chi_traj","sat")
     println("-"^72)
     for pp in plist
-        c = circuit_cost_point(n, thetafx, pp, k; cutoff=cutoff, maxdim=maxdim, excited=excited)
+        c = skip_mpdo ? (S_op=NaN, chi=0, linkdim=0, trace=NaN, saturated=false) :
+            circuit_cost_point(n, thetafx, pp, k; cutoff=cutoff,
+                               maxdim=maxdim_mpdo, excited=excited)
         e = circuit_trajectory_ensemble(n, thetafx, pp, k, ntraj; cutoff=1e-10,
-                                        maxdim=maxdim, excited=excited, verbose=false)
+                                        maxdim=maxdim_traj, excited=excited, verbose=false)
         f = e.series[end]; tot = 1-(1-pp)^k
         @printf("%8.4f %14.4f | %8.4f %9d %4s | %8.4f %9.1f %4s\n",
                 pp, tot, c.S_op, c.chi, c.saturated ? "!" : " ",
