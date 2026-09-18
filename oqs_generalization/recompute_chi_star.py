@@ -124,7 +124,22 @@ for n, fam in keys:
     if not pts:
         continue
     target = 1.5 * float(pts[0]["err_proj"])
-    csd, hd = chi_star([(int(r["chi"]), float(r["err_direct"])) for r in pts], target)
+    # MONOTONE ENVELOPE on the classical curve. err_direct passes through zero as
+    # the observable's sign flips, which produces isolated dips: at n=10 the
+    # chi=384 point reads 2.7e-6 while err_direct/sqrt(eps_chi) is 0.3-0.4 at
+    # every other chi and 0.013 there. Interpolating chi* through such a point
+    # anchors the answer on noise and UNDERSTATES the classical requirement --
+    # 319 instead of ~590 at n=10. Taking a running minimum from the right makes
+    # the curve non-increasing, which is what the underlying convergence is.
+    def envelope(pairs):
+        pairs = sorted(pairs)
+        out, run = [], float("inf")
+        for c, e in reversed(pairs):
+            run = e if e <= 0 else min(run, e)
+            out.append((c, run))
+        return list(reversed(out))
+
+    csd, hd = chi_star(envelope([(int(r["chi"]), float(r["err_direct"])) for r in pts]), target)
     csh, hh = chi_star([(int(r["chi"]), float(r["err_dmpf"])) for r in pts], target)
     ok = all(math.isfinite(x) for x in (csd, csh)) and hd == "interp" and hh == "interp"
     sp = csd / csh if ok else float("nan")
@@ -142,7 +157,19 @@ print("  is the state of play at n=8 and n=10 until the 128->ceiling gap is fill
 print("=" * 104)
 print("3. CROSS-OBSERVABLE CHECK   err_direct / err_dmpf, per observable")
 print("=" * 104)
-show = [o for o in ["Z_MAE", "Z_mid", "ZZ_mid", "Z_mean"] if o in obs_all]
+# Z_mean is EXCLUDED, and its exclusion is a physics statement, not a filter.
+# The Hamiltonian conserves total magnetisation, so <sum_m Z_m> evolves under the
+# dissipator alone -- and the dissipator layer is applied EXACTLY by every
+# product formula. So every candidate reproduces Z_mean to round-off, any
+# combination with sum(c)=1 does too, and err_dmpf is round-off divided into a
+# real truncation error. That is where the ratios of 1e9 to 5e10 come from. It
+# is a good check that the vectorisation and the dissipator sign are right; it is
+# not evidence for the method.
+DROP = {"Z_mean"}
+show = [o for o in ["Z_MAE", "Z_mid", "ZZ_mid"] if o in obs_all and o not in DROP]
+extra = [o for o in obs_all if o not in show and o not in DROP]
+if extra:
+    print(f"  (also present, not shown: {', '.join(extra)})")
 print(f"{'n':>3} {'family':>10} {'chi':>6} | " + " ".join(f"{o:>11}" for o in show))
 print("-" * 104)
 for n, fam in keys:
