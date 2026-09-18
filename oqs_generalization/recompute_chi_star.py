@@ -124,24 +124,63 @@ for n, fam in keys:
     if not pts:
         continue
     target = 1.5 * float(pts[0]["err_proj"])
-    # MONOTONE ENVELOPE on the classical curve. err_direct passes through zero as
-    # the observable's sign flips, which produces isolated dips: at n=10 the
-    # chi=384 point reads 2.7e-6 while err_direct/sqrt(eps_chi) is 0.3-0.4 at
-    # every other chi and 0.013 there. Interpolating chi* through such a point
-    # anchors the answer on noise and UNDERSTATES the classical requirement --
-    # 319 instead of ~590 at n=10. Taking a running minimum from the right makes
-    # the curve non-increasing, which is what the underlying convergence is.
-    def envelope(pairs):
-        pairs = sorted(pairs)
-        out, run = [], float("inf")
-        for c, e in reversed(pairs):
-            run = e if e <= 0 else min(run, e)
-            out.append((c, run))
-        return list(reversed(out))
+    # ROBUST chi* FOR THE CLASSICAL CURVE.
+    #
+    # err_direct is noisy because the observable's expectation passes through the
+    # exact value as chi grows, so isolated points dip far below the trend: at
+    # n=10, err_direct/sqrt(eps_chi) is 0.3-0.4 at most chi but 0.013 at chi=384.
+    # Interpolating chi* straight through such a point anchors the answer on
+    # noise (319 instead of ~400 at n=10).
+    #
+    # A running-minimum "envelope" does NOT fix this -- it collapses the whole
+    # curve onto the smallest tail value, which is the outlier itself. Verified:
+    # it turned every chi_direct* into the smallest grid point.
+    #
+    # What works: eps_chi is monotone and essentially noise-free, and err_direct
+    # follows a clean power law in it (fitted exponent 0.73 at n=10, i.e. roughly
+    # sqrt of the discarded weight, as expected for an amplitude error). Fit
+    # log(err) against log(eps) with Theil-Sen -- median of pairwise slopes,
+    # immune to a minority of outliers -- then invert the fit for the target and
+    # map eps* back to chi through the monotone eps(chi) curve.
 
-    csd, hd = chi_star(envelope([(int(r["chi"]), float(r["err_direct"])) for r in pts]), target)
+    def theil_sen(xs, ys):
+        sl = sorted((ys[j] - ys[i]) / (xs[j] - xs[i])
+                    for i in range(len(xs)) for j in range(i + 1, len(xs))
+                    if xs[j] != xs[i])
+        if not sl:
+            return None, None
+        m = len(sl)
+        slope = sl[m // 2] if m % 2 else 0.5 * (sl[m // 2 - 1] + sl[m // 2])
+        ic = sorted(y - slope * x for x, y in zip(xs, ys))
+        k = len(ic)
+        return slope, (ic[k // 2] if k % 2 else 0.5 * (ic[k // 2 - 1] + ic[k // 2]))
+
+    def chi_star_fit(recs, target):
+        """chi* from a power-law fit of err vs eps_chi. Falls back to raw grid
+        interpolation when there are too few usable points."""
+        d = [(int(r["chi"]), float(r["eps_chi"]), float(r["err_direct"])) for r in recs]
+        d = [(c, e, y) for c, e, y in d if e > 0 and y > 0 and c >= CHI_MIN]
+        if len(d) < 4:
+            return None, None, None
+        slope, a = theil_sen([math.log(e) for _, e, _ in d], [math.log(y) for _, _, y in d])
+        if slope is None or slope <= 0:
+            return None, None, None
+        eps_star = math.exp((math.log(target) - a) / slope)
+        pts = sorted(((math.log(e), math.log(c)) for c, e, _ in d), reverse=True)
+        le = math.log(eps_star)
+        for i in range(len(pts) - 1):
+            if pts[i][0] >= le >= pts[i + 1][0]:
+                f = (pts[i][0] - le) / (pts[i][0] - pts[i + 1][0])
+                return math.exp(pts[i][1] + f * (pts[i + 1][1] - pts[i][1])), slope, eps_star
+        return None, slope, eps_star
+
+    csd_fit, pexp, _ = chi_star_fit(pts, target)
+    if csd_fit is not None:
+        csd, hd = csd_fit, f"fit p={pexp:.2f}"
+    else:
+        csd, hd = chi_star([(int(r["chi"]), float(r["err_direct"])) for r in pts], target)
     csh, hh = chi_star([(int(r["chi"]), float(r["err_dmpf"])) for r in pts], target)
-    ok = all(math.isfinite(x) for x in (csd, csh)) and hd == "interp" and hh == "interp"
+    ok = all(math.isfinite(x) for x in (csd, csh)) and hd.startswith("fit") and hh == "interp"
     sp = csd / csh if ok else float("nan")
     stars.append(dict(n=n, family=fam, target=target, chi_direct_star=csd, how_direct=hd,
                       chi_dmpf_star=csh, how_dmpf=hh, speedup=sp))
