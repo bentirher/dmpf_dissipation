@@ -222,6 +222,23 @@ function circuit_mpdo(n::Int, theta::Float64, p::Float64, k::Int;
 end
 
 """
+    mpdo_dense(rho, lsites) -> Matrix
+
+Contracts the vectorised MPDO into a dense 2^n x 2^n density matrix. Only for
+small n (n <= 10 is 1024 x 1024); it exists so the fidelity mode can compute a
+TRACE distance, which needs eigenvalues and cannot be got from MPS contractions.
+"""
+function mpdo_dense(rho::MPS, ls::LiouvilleSites)
+    n = ls.n
+    n > 12 && error("mpdo_dense: n=$n is too large to densify")
+    T = rho[1]
+    for j in 2:length(rho); T *= rho[j]; end
+    A = Array(T, ls.ket..., ls.bra...)
+    d = 2^n
+    return reshape(A, d, d)
+end
+
+"""
     mpdo_run(n, theta, p, k; ...) -> (rho, lsites)
 
 Applies the k-step circuit and returns the final vectorised state. Shared by the
@@ -347,7 +364,19 @@ function trotter_infidelity(n::Int, theta::Float64, p::Float64, k::Int;
     hs2 = real(inner(rho,rho)) + real(inner(rhor,rhor)) - 2*real(inner(rho,rhor))
     hs  = sqrt(max(hs2, 0.0)) / sqrt(max(real(inner(rhor,rhor)), 1e-300))
 
-    return dz, hs, z, zr
+    # TRACE DISTANCE, the one with an operational meaning: (1/2)||rho-rho_ref||_1
+    # is the maximum probability of telling the two apart by ANY measurement, and
+    # it is bounded in [0,1]. The normalised HS distance above is not bounded
+    # that way and, because it divides by sqrt(purity), it blows up as the state
+    # mixes -- the n=8 run reported ~1.2 while single-site observables agreed to
+    # 6%. Needs eigenvalues, hence the densification, hence small n only.
+    td = NaN
+    if n <= 10
+        D = mpdo_dense(rho, ls) - mpdo_dense(rhor, ls)
+        td = 0.5 * sum(abs, eigvals(Hermitian((D + D')/2)))
+    end
+
+    return dz, hs, td, z, zr
 end
 
 
