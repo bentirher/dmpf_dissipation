@@ -83,6 +83,13 @@ maxdim_mpdo = parse(Int, getenv("MAXDIM_MPDO", min(maxdim, 256)))
 maxdim_traj = parse(Int, getenv("MAXDIM_TRAJ", maxdim))
 skip_mpdo   = parse(Bool, getenv("SKIP_MPDO", false))
 blas_thr    = parse(Int, getenv("BLAS_THREADS", 1))
+# CUTOFF FOR THE TRAJECTORY ROUTE, separate from the MPDO's.
+#
+# The stored bond dimension is set by the CUTOFF, not by what we report. Task 10
+# ran with 1e-10 and stored 4096 Schmidt values to report chi_req(1e-6) = 954 --
+# cost goes as chi^3, so that is roughly a 75x penalty for precision that is then
+# discarded. 1e-8 is still a hundred times tighter than the tolerance we quote.
+cutoff_traj = parse(Float64, getenv("CUTOFF_TRAJ", 1e-8))
 # 1 thread suits trajectory work (many small independent problems). Raise it via
 # BLAS_THREADS for MPDO-dominated modes, where one big SVD is the whole job.
 # This call must come AFTER blas_thr is parsed.
@@ -105,6 +112,7 @@ thetas = parse.(Float64, split(getenv("THETAS", default_thetas),","))
         k, cutoff, excited, ntraj, blas_thr)
 @printf("maxdim: MPDO=%d  trajectory=%d%s\n", maxdim_mpdo, maxdim_traj,
         skip_mpdo ? "   (MPDO SKIPPED)" : "")
+@printf("cutoff: MPDO=%.1e  trajectory=%.1e\n", cutoff, cutoff_traj)
 @printf("reference units for the printed (dt,t): J=%.4f  gamma=%.4f\n\n", JREF, GREF)
 flush(stdout)
 
@@ -144,7 +152,7 @@ function run_theta()
     for th in thetas
         c = circuit_cost_point(n, th, pfix, k; cutoff=cutoff, maxdim=md_for(n),
                                excited=excited)
-        e = circuit_trajectory_ensemble(n, th, pfix, k, ntraj; cutoff=1e-10,
+        e = circuit_trajectory_ensemble(n, th, pfix, k, ntraj; cutoff=cutoff_traj,
                                         maxdim=max(md_for(n), 1024), excited=excited,
                                         verbose=false)
         f = e.series[end]
@@ -169,21 +177,21 @@ function run_fidelity()
     # Small n on purpose: the reference needs KREF steps, and Trotter error is a
     # short-range property, so n=8 is representative and n=8 MPDO is EXACT
     # (Liouville ceiling 4^4 = 256).
-    rows = ["n,k,kref,theta,p,dt,t,infidelity_dZ,infidelity_HS,S_op,chi_mpdo,sat"]
+    rows = ["n,k,kref,theta,p,dt,t,infidelity_dZ,infidelity_HS,trace_distance,S_op,chi_mpdo,sat"]
     @printf("reference: %d steps for the same (J*t, gamma*t)\n\n", kref)
-    @printf("%7s %8s %8s | %11s %11s | %8s %9s\n",
-            "theta","dt","t","max|dZ|","HS dist","S_op","chi")
-    println("-"^72)
+    @printf("%7s %8s %8s | %10s %10s %10s | %8s %8s\n",
+            "theta","dt","t","max|dZ|","HS dist","trace dist","S_op","chi")
+    println("-"^80)
     for th in thetas
-        infz, infhs, _, _ = trotter_infidelity(n, th, pfix, k; k_ref=kref,
+        infz, infhs, inftd, _, _ = trotter_infidelity(n, th, pfix, k; k_ref=kref,
                                 cutoff=cutoff, maxdim=maxdim_mpdo, excited=excited)
         c = circuit_cost_point(n, th, pfix, k; cutoff=cutoff, maxdim=maxdim_mpdo,
                                excited=excited)
-        @printf("%7.4f %8.4f %8.3f | %11.3e %11.3e | %8.4f %9d\n",
-                th, dt_of(th), t_of(th), infz, infhs, c.S_op, c.chi); flush(stdout)
+        @printf("%7.4f %8.4f %8.3f | %10.3e %10.3e %10.4f | %8.4f %8d\n",
+                th, dt_of(th), t_of(th), infz, infhs, inftd, c.S_op, c.chi); flush(stdout)
         push!(rows, join([n,k,kref,@sprintf("%.6f",th),@sprintf("%.6f",pfix),
             @sprintf("%.6f",dt_of(th)),@sprintf("%.6f",t_of(th)),
-            @sprintf("%.6e",infz),@sprintf("%.6e",infhs),
+            @sprintf("%.6e",infz),@sprintf("%.6e",infhs),@sprintf("%.6f",inftd),
             @sprintf("%.8f",c.S_op),c.chi,c.saturated],","))
     end
     fpath = joinpath(outdir,"fidelity_n$(n)$(sfx).csv")
@@ -204,7 +212,7 @@ function run_damping()
         c = skip_mpdo ? (S_op=NaN, chi=0, linkdim=0, trace=NaN, saturated=false) :
             circuit_cost_point(n, thetafx, pp, k; cutoff=cutoff,
                                maxdim=maxdim_mpdo, excited=excited)
-        e = circuit_trajectory_ensemble(n, thetafx, pp, k, ntraj; cutoff=1e-10,
+        e = circuit_trajectory_ensemble(n, thetafx, pp, k, ntraj; cutoff=cutoff_traj,
                                         maxdim=maxdim_traj, excited=excited, verbose=false)
         f = e.series[end]; tot = 1-(1-pp)^k
         @printf("%8.4f %14.4f | %8.4f %9d %4s | %8.4f %9.1f %4s\n",
@@ -231,7 +239,7 @@ function run_scaling()
     for nn in nlist
         c = circuit_cost_point(nn, thetafx, pfix, k; cutoff=cutoff,
                                maxdim=md_for(nn), excited=excited)
-        e = circuit_trajectory_ensemble(nn, thetafx, pfix, k, ntraj; cutoff=1e-10,
+        e = circuit_trajectory_ensemble(nn, thetafx, pfix, k, ntraj; cutoff=cutoff_traj,
                                         maxdim=max(md_for(nn), 1024),
                                         excited=excited, verbose=false)
         f = e.series[end]
@@ -277,7 +285,7 @@ function run_mpdoladder()
         push!(rows, join([n,k,@sprintf("%.6f",thetafx),@sprintf("%.6f",pfix),md,ceil_n,
             @sprintf("%.8f",c.S_op),c.chi,c.linkdim,c.saturated,md>=ceil_n],","))
     end
-    e = circuit_trajectory_ensemble(n, thetafx, pfix, k, ntraj; cutoff=1e-10,
+    e = circuit_trajectory_ensemble(n, thetafx, pfix, k, ntraj; cutoff=cutoff_traj,
                                     maxdim=4096, excited=excited, verbose=false)
     f = e.series[end]
     @printf("\n  trajectory route at the same point: chi = %.1f +/- %.1f  (maxdim 4096, %s)\n",
