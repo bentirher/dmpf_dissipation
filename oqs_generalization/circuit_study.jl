@@ -150,16 +150,24 @@ function run_theta()
             "theta","dt","t","S_op","chi_MPDO","sat","S_traj","chi_traj","sat")
     println("-"^80)
     for th in thetas
-        c = circuit_cost_point(n, th, pfix, k; cutoff=cutoff, maxdim=md_for(n),
+        # This function previously used md_for(n) for BOTH routes and never
+        # consulted SKIP_MPDO, MAXDIM_MPDO or MAXDIM_TRAJ -- an earlier patch
+        # matched text that was not here and silently did nothing. With MAXDIM
+        # unset, md_for(24) = 1024, so the n=24 run computed the MPDO at 1024
+        # despite SKIP_MPDO=true, and capped the trajectory at max(1024,1024) =
+        # 1024 while the header announced 4096. chi_traj = 1009 was therefore
+        # censored, and ~half the 7.4 h went on an MPDO that should not have run.
+        c = skip_mpdo ? (S_op=NaN, chi=0, linkdim=0, trace=NaN, saturated=false) :
+            circuit_cost_point(n, th, pfix, k; cutoff=cutoff, maxdim=maxdim_mpdo,
                                excited=excited)
         e = circuit_trajectory_ensemble(n, th, pfix, k, ntraj; cutoff=cutoff_traj,
-                                        maxdim=max(md_for(n), 1024), excited=excited,
+                                        maxdim=maxdim_traj, excited=excited,
                                         verbose=false)
         f = e.series[end]
         gJ = pfix > 0 ? (-log(1-pfix)/dt_of(th))/JREF : 0.0
         @printf("%7.4f %8.4f %8.3f | %8.4f %9d %4s | %8.4f %9.1f %4s\n",
                 th, dt_of(th), t_of(th), c.S_op, c.chi, c.saturated ? "!" : " ",
-                f.S_mean, f.chi_mean, f.saturated ? "!!" : " "); flush(stdout)
+                f.S_mean, f.chi_mean, (f.censored ? "CEN" : (f.saturated ? "!!" : " "))); flush(stdout)
         push!(rows, join([n,k,@sprintf("%.6f",th),@sprintf("%.6f",pfix),
             @sprintf("%.6f",dt_of(th)),@sprintf("%.6f",t_of(th)),@sprintf("%.6f",gJ),
             @sprintf("%.8f",c.S_op),c.chi,c.linkdim,@sprintf("%.8f",c.trace),c.saturated,
@@ -217,7 +225,7 @@ function run_damping()
         f = e.series[end]; tot = 1-(1-pp)^k
         @printf("%8.4f %14.4f | %8.4f %9d %4s | %8.4f %9.1f %4s\n",
                 pp, tot, c.S_op, c.chi, c.saturated ? "!" : " ",
-                f.S_mean, f.chi_mean, f.saturated ? "!!" : " "); flush(stdout)
+                f.S_mean, f.chi_mean, (f.censored ? "CEN" : (f.saturated ? "!!" : " "))); flush(stdout)
         push!(rows, join([n,k,@sprintf("%.6f",thetafx),@sprintf("%.6f",pp),
             @sprintf("%.6f",tot),@sprintf("%.8f",c.S_op),c.chi,c.saturated,
             @sprintf("%.8f",f.S_mean),@sprintf("%.4f",f.chi_mean),
@@ -237,15 +245,20 @@ function run_scaling()
             "n","S_op","chi_MPDO","sat","S_traj","chi_traj","sat","wall/traj")
     println("-"^76)
     for nn in nlist
-        c = circuit_cost_point(nn, thetafx, pfix, k; cutoff=cutoff,
-                               maxdim=md_for(nn), excited=excited)
+        # Same bug as run_theta, caught by auditing every call site: md_for(nn)
+        # for both routes, SKIP_MPDO ignored. Left alone, every Step 4 task would
+        # have capped the trajectory at 1024 and paid for a full MPDO -- i.e. a
+        # scaling curve censored at precisely the n values that set the exponent.
+        c = skip_mpdo ? (S_op=NaN, chi=0, linkdim=0, trace=NaN, saturated=false) :
+            circuit_cost_point(nn, thetafx, pfix, k; cutoff=cutoff,
+                               maxdim=maxdim_mpdo, excited=excited)
         e = circuit_trajectory_ensemble(nn, thetafx, pfix, k, ntraj; cutoff=cutoff_traj,
-                                        maxdim=max(md_for(nn), 1024),
+                                        maxdim=maxdim_traj,
                                         excited=excited, verbose=false)
         f = e.series[end]
         @printf("%5d | %8.4f %10d %4s | %8.4f %10.1f %4s %10.1f\n",
                 nn, c.S_op, c.chi, c.saturated ? "!" : " ", f.S_mean, f.chi_mean,
-                f.saturated ? "!!" : " ", mean(e.walltime)); flush(stdout)
+                (f.censored ? "CEN" : (f.saturated ? "!!" : " ")), mean(e.walltime)); flush(stdout)
         push!(rows, join([nn,k,@sprintf("%.6f",thetafx),@sprintf("%.6f",pfix),
             @sprintf("%.8f",c.S_op),c.chi,c.saturated,state_bond_dim_ceiling(nn),
             @sprintf("%.8f",f.S_mean),@sprintf("%.4f",f.chi_mean),
