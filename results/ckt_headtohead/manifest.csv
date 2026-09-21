@@ -1,0 +1,19 @@
+key,value
+mode,headtohead
+n,16
+nlist,4 6 8 10 12
+k,10
+p,0.05
+plist,0.0 0.01 0.02 0.05 0.1 0.15 0.25
+theta,0.95
+thetas,0.1 0.2 0.35 0.5 0.65 0.8 0.95 1.1 1.25 1.4 1.5708 1.7 1.9 2.1 2.4 2.7 3.0
+maxdim,4096
+cutoff,1.0e-12
+ntraj,512
+kref,1000
+excited,random
+Jref,0.25
+Gref,0.0625
+threads,16
+host,hyperion-224
+started,2026-09-17T09:28:52.500

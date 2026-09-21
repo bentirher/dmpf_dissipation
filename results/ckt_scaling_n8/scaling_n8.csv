@@ -1,0 +1,2 @@
+n,k,theta,p,S_op,chi_mpdo,sat_mpdo,ceiling,S_traj_mean,chi_traj_mean,chi_traj_sem,chi3_traj,chi_traj_max,sat_traj,wall_s
+8,10,0.950000,0.050000,NaN,0,false,256,2.41623857,13.7969,0.3922,2.988484e+03,16,false,9.26
