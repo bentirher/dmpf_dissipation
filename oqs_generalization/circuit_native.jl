@@ -231,8 +231,18 @@ TRACE distance, which needs eigenvalues and cannot be got from MPS contractions.
 function mpdo_dense(rho::MPS, ls::LiouvilleSites)
     n = ls.n
     n > 12 && error("mpdo_dense: n=$n is too large to densify")
-    T = rho[1]
-    for j in 2:length(rho); T *= rho[j]; end
+    # Densifying deliberately builds a 2n-index tensor (16 at n=8), past
+    # ITensor's order-warning threshold of 14. The warning is correct in general
+    # and meaningless here, and it printed a stack trace per contraction --
+    # hundreds of lines per theta point in task 11. Silence it for this block only.
+    # The macro form is the one ITensor's own warning message recommends, so it
+    # is certain to exist; it evaluates the block with the warning off and
+    # restores the previous threshold afterwards.
+    T = ITensors.@disable_warn_order begin
+        TT = rho[1]
+        for j in 2:length(rho); TT *= rho[j]; end
+        TT
+    end
     A = Array(T, ls.ket..., ls.bra...)
     d = 2^n
     return reshape(A, d, d)
@@ -469,7 +479,14 @@ function circuit_trajectory_ensemble(n::Int, theta::Float64, p::Float64, k::Int,
                     site=site, z_mid=mean(z),
                     z_sem = Ntraj>1 ? std(z)/sqrt(Ntraj) : 0.0,
                     z_var=var(z), z_all=zall, z_all_sem=zallsem,
-                    saturated=maximum(float.([r[s].linkdim for r in runs])) >= maxdim))
+                    saturated=maximum(float.([r[s].linkdim for r in runs])) >= maxdim,
+                    # The flag above fires when the STORED bond dimension hits the
+                    # cap. With a fat spectral tail that can happen while the
+                    # REPORTED chi (at tolerance 1e-6) is far below it, in which
+                    # case only weight < 1e-6 was discarded and the number stands.
+                    # This one asks the question that matters: is the reported
+                    # chi itself pressed against the cap?
+                    censored=maximum(c) >= 0.9*maxdim))
     end
     if verbose
         @printf("\nTRAJ  n=%d theta=%.4f p=%.4f k=%d Ntraj=%d | wall %.1f s/traj, %.2f core-h\n",
