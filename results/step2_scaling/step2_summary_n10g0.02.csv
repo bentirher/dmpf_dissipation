@@ -1,0 +1,3 @@
+n,family,r,chi_ceiling,chi_rho_exact,ref_selferr,cond_N,lam_min,singular,E_mpf,err_proj,err_best_single,target,chi_direct_star,chi_dmpf_star,speedup,ratio_at_chi32,ratio_at_chi64
+10,4-8-16,3,1024,1024,3.257519e-08,1.281181e+06,7.671563e-08,false,1.64108646e-07,1.84876678e-05,1.47367522e-03,2.77315017e-05,358.2,91.8,3.9000,97.237610,169.378142
+10,3-8,2,1024,1024,3.257519e-08,1.783917e+02,1.710315e-03,false,2.15624436e-03,1.58210979e-03,6.01749912e-03,2.37316468e-03,143.7,16.0,8.9833,75.979653,7.415362
