@@ -131,9 +131,17 @@ case $SLURM_ARRAY_TASK_ID in
   #     <Z> error bar is extrapolated from the variance, not run.
   # Expect ~3-4 h.
   10) export MODE=theta N=24 NTRAJ=16 EXCITED=random
-      export MAXDIM_TRAJ=4096 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
+      export MAXDIM_TRAJ=2048 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
       export THETAS=0.95
       export OUTDIR=ckt_theta_n24_big TAG=n24big ;;
+  # WHY 2048 AND WHY IT NEEDS A LONGER WALL. Both previous n=24 attempts
+  # returned chi_traj ~ 1000 capped at 1024 (a run_theta bug made it ignore
+  # MAXDIM_TRAJ and SKIP_MPDO). Extrapolating from the uncensored n=16 value
+  # (168) at ~0.22 per site suggests the true value is ~1000-1500, so 2048
+  # leaves headroom without paying for 4096. The MPDO is now genuinely skipped,
+  # which recovers roughly half the previous 7.4 h -- but chi^3 at ~1300 is ~2x
+  # the cost at 1024. Submit with a longer wall, which overrides the header:
+  #     sbatch --time=12:00:00 --array=10 submit_circuit_study.sh
 
   # Fidelity again, now reporting BOTH max|dZ| and the Hilbert-Schmidt distance.
   # max|dZ| depends on the scale of the observable and hence on the initial
@@ -237,7 +245,7 @@ case $SLURM_ARRAY_TASK_ID in
 esac
 
 mkdir -p "$OUTDIR"
-echo "task=$SLURM_ARRAY_TASK_ID MODE=$MODE N=${N:-$NLIST} K=$K P=$P THETA=${THETA:-sweep} MAXDIM=$MAXDIM"
+echo "task=$SLURM_ARRAY_TASK_ID MODE=$MODE N=${N:-$NLIST} K=$K P=$P THETA=${THETA:-sweep} MAXDIM_TRAJ=${MAXDIM_TRAJ:-unset} MAXDIM_MPDO=${MAXDIM_MPDO:-unset} SKIP_MPDO=${SKIP_MPDO:-false} CUTOFF_TRAJ=${CUTOFF_TRAJ:-unset}"
 echo "OUTDIR=$OUTDIR threads=$JULIA_NUM_THREADS host=$(hostname) cwd=$(pwd)"
 echo "start: $(date)"
 
