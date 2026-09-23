@@ -9,7 +9,9 @@
 #     18,19,20  n-scaling: chi_traj = 13.8 / 48.8 / 168.6 at n = 8 / 12 / 16
 #
 #   OUTSTANDING:
-#     24        the (theta, p) colormap          <-- run this
+#     24        the (theta, p) colormap          <-- run this first
+#     25,26,27  the EXPONENT at other (theta, p) points. chi was optimised at
+#               n=16; hardware is at n~40, where the exponent decides. ~6 min each.
 #     16,17     untruncated MPDO-vs-trajectory table, for the write-up
 #
 #   ABANDONED, and why:
@@ -56,6 +58,35 @@ export K=10 P=0.05 EXCITED=neel CUTOFF=1e-12
 export JREF=0.25 GREF=0.0625      # only used to print the implied (dt, t)
 
 case $SLURM_ARRAY_TASK_ID in
+  # --- THE EXPONENT AT SEVERAL POINTS ON THE MAP (25-27) --------------------
+  #
+  # WHY THIS MATTERS MORE THAN IT LOOKS. Tasks 18-20 measured
+  #     ln chi_traj = 0.313 n + 0.13   ->  crossover at n ~ 37
+  # at ONE point, (theta, p) = (0.95, 0.05). The hardware runs near n = 40, and
+  # there what matters is the EXPONENT, not the value at n = 16. Maximising
+  # chi(n=16) and maximising chi(n=40) are different optimisations, and only the
+  # first has been done. If the exponent varies across the map, the operating
+  # point moves.
+  #
+  # Also: p = 0.05 was inherited from the continuum result that dissipation
+  # first shows at gamma*t ~ 0.4, i.e. 1-(1-p)^10 = 0.40. That argument belongs
+  # to a framing we have dropped and has never been tested in circuit units.
+  #
+  # Cost is trivial -- measured wall per trajectory is 9 s, 13 s, 59 s at
+  # n = 8, 12, 16 -- so each task is ~6 min. Set THETA and P from the colormap
+  # first; the defaults below bracket the current point in damping.
+  25) export MODE=scaling NLIST=8,12,16 THETA=0.95 P=0.01 NTRAJ=64 EXCITED=random
+      export MAXDIM_TRAJ=4096 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
+      export OUTDIR=ckt_exp_lowp TAG=lowp ;;
+  26) export MODE=scaling NLIST=8,12,16 THETA=0.95 P=0.15 NTRAJ=64 EXCITED=random
+      export MAXDIM_TRAJ=4096 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
+      export OUTDIR=ckt_exp_highp TAG=highp ;;
+  # The second plateau: equally costly at n=16, much coarser as a discretisation.
+  # If its exponent is higher, the trade-off deserves a second look.
+  27) export MODE=scaling NLIST=8,12,16 THETA=2.10 P=0.05 NTRAJ=64 EXCITED=random
+      export MAXDIM_TRAJ=4096 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
+      export OUTDIR=ckt_exp_th21 TAG=th21 ;;
+
   # --- THE COLORMAP. One job, and it replaces both the theta sweep and the
   # damping sweep: each is a one-dimensional slice of this grid.
   # 13 theta x 9 p = 117 points. Measured wall per trajectory at n=16 is 59 s,
