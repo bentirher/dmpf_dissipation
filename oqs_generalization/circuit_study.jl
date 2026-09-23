@@ -11,6 +11,8 @@
 #                  Where does it stop being physics?
 #   MODE=damping   Step 3.  Sweep p at the chosen theta.
 #   MODE=scaling   Step 4.  Sweep n at the chosen (theta, p).
+#   MODE=map       The 2D (theta, p) colormap. Subsumes MODE=theta and
+#                  MODE=damping -- both are one-dimensional slices of it.
 #   MODE=headtohead  A self-contained MPDO-vs-trajectory comparison at small n,
 #                  where BOTH methods can be run UNTRUNCATED. Stands alone: it
 #                  does not ask the reader to accept any earlier result.
@@ -391,12 +393,63 @@ function run_headtohead()
 end
 
 # =============================================================================
+function run_map()
+    # THE 2D SWEEP. One job replaces the theta sweep and the damping sweep:
+    # both are slices of this. Axes are the two knobs the circuit actually has,
+    #     theta  the rxx angle            = 2*J*dt
+    #     p      per-step jump probability = 1 - exp(-gamma*dt)
+    # at fixed n and k. Everything else about the circuit is determined.
+    #
+    # Cost is (grid points) x ceil(NTRAJ/threads) x (wall per trajectory), and
+    # wall/traj was measured at 9 s (n=8), 13 s (n=12), 59 s (n=16). So a
+    # 13 x 9 grid at n=16 with NTRAJ=32 is about 4 h -- one job, no ladder.
+    rows = ["n,k,theta,p,dt,t,total_damping,S_traj_mean,S_traj_p95," *
+            "chi_mean,chi_sem,chi_max,chi3_mean,censored,saturated,wall_s," *
+            "S_op_mpdo,chi_mpdo,sat_mpdo"]
+    @printf("grid: %d theta x %d p = %d points, Ntraj=%d\n\n",
+            length(thetas), length(plist), length(thetas)*length(plist), ntraj)
+    @printf("%8s |", "theta")
+    for pp in plist; @printf(" p=%-6.3f", pp); end
+    println("\n" * "-"^(10 + 9*length(plist)))
+    done = 0
+    for th in thetas
+        @printf("%8.4f |", th)
+        for pp in plist
+            e = circuit_trajectory_ensemble(n, th, pp, k, ntraj; cutoff=cutoff_traj,
+                                            maxdim=maxdim_traj, excited=excited,
+                                            verbose=false)
+            f = e.series[end]
+            c = skip_mpdo ? (S_op=NaN, chi=0, saturated=false) :
+                circuit_cost_point(n, th, pp, k; cutoff=cutoff, maxdim=maxdim_mpdo,
+                                   excited=excited)
+            @printf(" %7.1f%s", f.chi_mean, f.censored ? "*" : " ")
+            push!(rows, join([n,k,@sprintf("%.6f",th),@sprintf("%.6f",pp),
+                @sprintf("%.6f",dt_of(th)),@sprintf("%.6f",t_of(th)),
+                @sprintf("%.6f",1-(1-pp)^k),
+                @sprintf("%.6f",f.S_mean),@sprintf("%.6f",f.S_p95),
+                @sprintf("%.4f",f.chi_mean),@sprintf("%.4f",f.chi_sem),
+                @sprintf("%.0f",f.chi_max),@sprintf("%.6e",f.chi3_mean),
+                f.censored,f.saturated,@sprintf("%.2f",mean(e.walltime)),
+                @sprintf("%.6f",c.S_op),c.chi,c.saturated],","))
+            done += 1
+        end
+        println(); flush(stdout)
+        # Written after every row, so a timeout still leaves a usable partial map.
+        write(joinpath(outdir,"map_n$(n)$(sfx).csv"), join(rows,"\n")*"\n")
+    end
+    @printf("\nwrote %s  (%d points)\n", joinpath(outdir,"map_n$(n)$(sfx).csv"), done)
+    println("  * next to a value means the reported chi is within 10% of the cap.")
+    println("  Plot with:  python3 plot_map.py <that csv>")
+end
+
+# =============================================================================
 if     mode == "theta";    run_theta()
 elseif mode == "mpdoladder"; run_mpdoladder()
 elseif mode == "fidelity"; run_fidelity()
 elseif mode == "damping";  run_damping()
 elseif mode == "scaling";  run_scaling()
 elseif mode == "headtohead"; run_headtohead()
-else error("MODE must be one of: theta, fidelity, damping, scaling, mpdoladder, headtohead. Got '$mode'.")
+elseif mode == "map";      run_map()
+else error("MODE must be one of: theta, fidelity, damping, scaling, mpdoladder, headtohead, map. Got '$mode'.")
 end
 println("\n[stage] done"); flush(stdout)
