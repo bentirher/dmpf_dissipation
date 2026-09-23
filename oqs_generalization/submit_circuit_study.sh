@@ -1,30 +1,34 @@
 #!/bin/bash
-# The whole hardware-aware study, one driver, selected by MODE.
+# =============================================================================
+# STATUS -- only two things are still outstanding.
 #
-#   sbatch --array=0-2,5,6 submit_circuit_study.sh  # STEP 2: theta + fidelity + init state  [DONE]
-#   sbatch --array=7-9     submit_circuit_study.sh  # STEP 2b  [DONE -- but n=24 was CENSORED]
-#   sbatch --array=10,11   submit_circuit_study.sh  # STEP 2c: uncensor n=24, and the HS fidelity
-#   sbatch --array=12-14   submit_circuit_study.sh  # MPDO on its own terms, no prior context needed
-#   sbatch --array=3       submit_circuit_study.sh  # STEP 3: damping sweep
-#   sbatch --array=18-23   submit_circuit_study.sh  # STEP 4: n-scaling, ONE TASK PER n
-#   sbatch --array=16,17   submit_circuit_study.sh  # STANDALONE: MPDO vs trajectories, untruncated
-#   sbatch --array=3   submit_circuit_study.sh    # STEP 3: damping sweep
-#   sbatch --array=4   submit_circuit_study.sh    # STEP 4: n scaling
+#   DONE, do not rerun:
+#     0,1,5,6   theta sweeps at n=16 and n=24, Neel / |+> / random
+#     2,9,11    fidelity curves (max|dZ|, HS distance, trace distance)
+#     10        n=24 anchor: chi_traj >= 1741 (capped at 2048)
+#     18,19,20  n-scaling: chi_traj = 13.8 / 48.8 / 168.6 at n = 8 / 12 / 16
 #
-# Run 0-2 first and look at them together before launching 3; the choice of
-# theta made in Step 2 is an input to Steps 3 and 4.
+#   OUTSTANDING:
+#     24        the (theta, p) colormap          <-- run this
+#     16,17     untruncated MPDO-vs-trajectory table, for the write-up
 #
-# WHY THIS IS CHEAP. The earlier study integrated ~240 Trotter steps to reach
-# t=0.45n. The hardware circuit is k=10 steps, full stop, so every point here is
-# ~24x cheaper at the same chi. That is what makes n=24 affordable inside a
-# parameter sweep rather than as a single heroic run.
+#   ABANDONED, and why:
+#     3,4       MODE=damping and the multi-n MODE=scaling. Both are subsumed:
+#               damping is a slice of task 24, and the scaling ladder is done.
+#     21,22,23  n = 20, 24, 28 scaling. n=24 cost 7.4 h for ONE trajectory and
+#               n=28 extrapolates to ~158 h. n=24 is the cluster ceiling and
+#               tasks 18-20 already pin the exponent.
 #
-# THE ONE THING TO WATCH. With k=10 the entanglement cap is set by k, not n:
-# only the gates that cross a given cut can raise its Schmidt rank, and there
-# are 2 per step in this first-order circuit. Expect S_op to saturate in n well
-# before the chi ceiling bites, and expect MAXDIM not to bind at all for the
-# trajectory route. If the `sat` column fires anywhere, the point is a lower
-# bound and needs a rerun at larger MAXDIM before being quoted.
+# THE SCALING RESULT, since it is what everything else was for:
+#     ln(chi_traj) = 0.313 n + 0.13   from the three uncensored points
+#                                     (local slopes 0.3158, 0.3099 -- flat)
+#     predicts 2068 at n=24; measured >= 1741 at a cap of 2048. Consistent.
+#     The continuum operating line gave 0.221 per site, so the hardware circuit
+#     is STEEPER, and N*chi^3 crosses 1e18 at n ~ 37 rather than ~47.
+#
+#   sbatch --array=24    submit_circuit_study.sh   # the colormap, ~4 h
+#   sbatch --array=16,17 submit_circuit_study.sh   # the head-to-head table
+# =============================================================================
 #SBATCH --job-name=cktstudy
 #SBATCH --qos=regular
 #SBATCH --nodes=1
@@ -52,6 +56,18 @@ export K=10 P=0.05 EXCITED=neel CUTOFF=1e-12
 export JREF=0.25 GREF=0.0625      # only used to print the implied (dt, t)
 
 case $SLURM_ARRAY_TASK_ID in
+  # --- THE COLORMAP. One job, and it replaces both the theta sweep and the
+  # damping sweep: each is a one-dimensional slice of this grid.
+  # 13 theta x 9 p = 117 points. Measured wall per trajectory at n=16 is 59 s,
+  # and NTRAJ=32 is two waves on 16 threads, so ~4 h.
+  # The CSV is rewritten after every theta row, so a timeout still leaves a
+  # usable partial map rather than nothing.
+  24) export MODE=map N=16 K=10 NTRAJ=32 EXCITED=random
+      export MAXDIM_TRAJ=2048 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
+      export THETAS=0.20,0.35,0.50,0.65,0.80,0.95,1.10,1.25,1.40,1.5708,1.90,2.10,2.40
+      export PLIST=0.0,0.005,0.01,0.02,0.035,0.05,0.08,0.12,0.20
+      export OUTDIR=ckt_map TAG=m16 ;;
+
   # --- STEP 2a: where is the circuit hardest in theta? -----------------------
   # MAXDIM=256, down from 1024, for three reasons. (i) At 1024 the MPDO
   # saturated from theta=0.2 onward, so the expensive number was a censored
