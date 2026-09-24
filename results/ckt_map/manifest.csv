@@ -1,0 +1,19 @@
+key,value
+mode,map
+n,16
+nlist,8 12 16 20 24
+k,10
+p,0.05
+plist,0.0 0.005 0.01 0.02 0.035 0.05 0.08 0.12 0.2
+theta,1.5708
+thetas,0.2 0.35 0.5 0.65 0.8 0.95 1.1 1.25 1.4 1.5708 1.9 2.1 2.4
+maxdim,1024
+cutoff,1.0e-12
+ntraj,32
+kref,1000
+excited,random
+Jref,0.25
+Gref,0.0625
+threads,16
+host,hyperion-219
+started,2026-09-23T15:52:04.167
