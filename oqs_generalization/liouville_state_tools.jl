@@ -75,13 +75,23 @@ include("symmetric_splitting.jl")   # split_step_MPO, :project vs :strang.
 # EXACT: no truncation is possible, which is what makes small n usable as
 # ground truth.
 
-state_max_bond_dim(n::Int) = 4^min(n ÷ 2, n - n ÷ 2)
+# NOTE ON LARGE n: 4^31 still fits in an Int64 but 4^32 does not, and the same
+# for 16^16 in the MPO version. At the sizes this method is meant for (n >= 50)
+# the ceiling is astronomically large and irrelevant -- what matters is that
+# asking for it does not silently overflow to a negative number. Both saturate.
+function state_max_bond_dim(n::Int)
+    e = min(n ÷ 2, n - n ÷ 2)
+    return e >= 31 ? typemax(Int) : 4^e
+end
 
 # The MPO ceiling, 16^min(l, n-l). Identical to theoretical_max_bond_dim in
 # trotter_error_gram.jl, defined here under a different name so these scripts
 # do NOT have to include that file (it pulls in the whole four-object recursion,
 # which Steps 0 and 1 do not use). Only needed to cap the step-channel MPO.
-mpo_max_bond_dim(n::Int) = 16^min(n ÷ 2, n - n ÷ 2)
+function mpo_max_bond_dim(n::Int)
+    e = min(n ÷ 2, n - n ÷ 2)
+    return e >= 15 ? typemax(Int) : 16^e
+end
 
 
 # -----------------------------------------------------------------------------
@@ -303,6 +313,43 @@ end
 
 
 # -----------------------------------------------------------------------------
+# HONEST chi-CAPPED EVOLUTION  (the production protocol)
+# -----------------------------------------------------------------------------
+#
+# evolve_tracked_gates above applies the gates at the CEILING and truncates to
+# chi once per step. That was a measurement choice: it puts all of the loss into
+# a single operation so the discarded weight can be read off exactly. It also
+# makes the reported chi meaningless as a cost.
+#
+# A two-site gate can raise a Liouville bond to chi*d with d = 4, so from
+# chi = 16 at n = 10 the middle bond reaches 64, then 256, then 1024 -- the
+# ceiling -- within three gate layers, and a fourth-order step has about
+# twenty-five. Every "chi = 16" step therefore ran at bond dimension up to 1024
+# internally. The inflation is worst at small chi, which is exactly where the
+# headline numbers sit.
+#
+# This routine caps the bond dimension at chi at every gate, as a production
+# TEBD would. Stored bond dimension never exceeds chi, memory is O(n chi^2),
+# time is O(n chi^3) per gate, and NOTHING references the ceiling -- so it runs
+# at any n.
+#
+# The cost is that the accumulated discarded weight is no longer a single
+# measurable number (the dissipator gates are not norm preserving, so the
+# norm-difference trick does not apply gate by gate). eps is returned as NaN and
+# chi itself becomes the resource axis, which is what every claim is about in
+# any case. Use protocol=:measured to recover eps_chi at small n.
+
+function evolve_capped_gates(rho0::MPS, gates::Vector{ITensor}, nsteps::Int;
+                             n::Int, maxdim::Int, cutoff::Float64=EXACT_CUTOFF)
+    psi = deepcopy(rho0)
+    for _ in 1:nsteps
+        psi = apply(gates, psi; cutoff=cutoff, maxdim=maxdim)
+    end
+    return psi, NaN
+end
+
+
+# -----------------------------------------------------------------------------
 # One call: rho_k(t) for a given number of Trotter steps
 # -----------------------------------------------------------------------------
 #
@@ -334,13 +381,22 @@ function evolve_trotter(n, J, gammas, t::Float64, k::Int, lsites::LiouvilleSites
                         rho0::MPS; maxdim::Int, order::Int=2, dissipation::Bool=true,
                         cutoff::Float64=EXACT_CUTOFF, mpo_maxdim::Int=512,
                         splitting::Symbol=:project, mode::Symbol=:gates,
+                        protocol::Symbol=:capped,
                         renormalize_trace::Bool=true, id_mps::Union{MPS,Nothing}=nothing)
 
+    # protocol = :capped   bond dimension capped at maxdim at every gate. The
+    #                      honest cost, and the only one that runs past the
+    #                      sizes where the ceiling is affordable. eps = NaN.
+    #            :measured gates applied at the ceiling, then one tracked
+    #                      truncation per step. Gives an exact eps_chi but runs
+    #                      at ceiling cost internally; small n only.
     local psi, eps, chiS, truncated
     if mode === :gates
         gates = split_step_gates(n, J, gammas, t / k, lsites;
                                  order=order, dissipation=dissipation, splitting=splitting)
-        psi, eps = evolve_tracked_gates(rho0, gates, k; n=n, maxdim=maxdim, cutoff=cutoff)
+        psi, eps = protocol === :capped ?
+            evolve_capped_gates(rho0, gates, k; n=n, maxdim=maxdim, cutoff=cutoff) :
+            evolve_tracked_gates(rho0, gates, k; n=n, maxdim=maxdim, cutoff=cutoff)
         chiS, truncated = length(gates), false
     elseif mode === :mpo
         cap = min(mpo_maxdim, mpo_max_bond_dim(n))
@@ -361,7 +417,7 @@ function evolve_trotter(n, J, gammas, t::Float64, k::Int, lsites::LiouvilleSites
         psi[1] = psi[1] / tr
     end
     return (rho=psi, eps=eps, chi_S=chiS, chi=maxlinkdim(psi), trace=tr,
-            step_truncated=truncated, mode=mode)
+            step_truncated=truncated, mode=mode, protocol=protocol)
 end
 
 

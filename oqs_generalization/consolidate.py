@@ -55,6 +55,15 @@ for f, g, n in files:
 print()
 
 
+def _f(x):
+    """float() that maps NaN/blank to None (eps_chi is NaN under PROTOCOL=capped)."""
+    try:
+        v = float(x)
+        return v if math.isfinite(v) else None
+    except (TypeError, ValueError):
+        return None
+
+
 def theil_sen(xs, ys):
     sl = sorted((ys[j] - ys[i]) / (xs[j] - xs[i])
                 for i in range(len(xs)) for j in range(i + 1, len(xs)) if xs[j] != xs[i])
@@ -66,20 +75,34 @@ def theil_sen(xs, ys):
 
 
 def chi_star_fit(pts, target):
-    """Classical chi*: power-law fit of err vs eps_chi, inverted, then mapped back
-    to chi through the monotone eps(chi) curve. None if the target falls outside
-    the observed eps range -- we do not extrapolate."""
-    d = [(c, e, y) for c, e, y in pts if e > 0 and y > 0 and c >= CHI_MIN]
+    """Classical chi*: robust power-law fit, inverted for the target.
+
+    Preferred abscissa is the discarded weight eps_chi, which is monotone and
+    essentially noise-free. Under PROTOCOL=capped there is no eps_chi (the
+    dissipator gates are not norm preserving, so per-gate discarded weight is
+    not recoverable by the norm trick) and it is written as NaN; we then fit
+    against chi itself, which is noisier but is also the axis every claim is
+    stated on. Either way we never extrapolate beyond the observed range."""
+    d = [(c, e, y) for c, e, y in pts if y > 0 and c >= CHI_MIN]
     if len(d) < 4:
         return None
-    s, a = theil_sen([math.log(e) for _, e, _ in d], [math.log(y) for _, _, y in d])
-    if s is None or s <= 0:
+    use_eps = all(e is not None and math.isfinite(e) and e > 0 for _, e, _ in d)
+    xs = [math.log(e if use_eps else c) for c, e, _ in d]
+    ys = [math.log(y) for _, _, y in d]
+    s, a = theil_sen(xs, ys)
+    if s is None or s == 0:
         return None
-    le = (math.log(target) - a) / s
+    # err falls with chi (s < 0) and rises with eps (s > 0)
+    if (use_eps and s <= 0) or ((not use_eps) and s >= 0):
+        return None
+    lx = (math.log(target) - a) / s
+    if not use_eps:                      # lx is already log(chi)
+        lo, hi = min(xs), max(xs)
+        return math.exp(lx) if lo <= lx <= hi else None
     q = sorted(((math.log(e), math.log(c)) for c, e, _ in d), reverse=True)
     for i in range(len(q) - 1):
-        if q[i][0] >= le >= q[i + 1][0]:
-            f = (q[i][0] - le) / (q[i][0] - q[i + 1][0])
+        if q[i][0] >= lx >= q[i + 1][0]:
+            f = (q[i][0] - lx) / (q[i][0] - q[i + 1][0])
             return math.exp(q[i][1] + f * (q[i + 1][1] - q[i][1]))
     return None
 
@@ -137,11 +160,11 @@ for f, g, n_hint in files:
                 if len(rs) != len(site_obs):
                     continue
                 avg = lambda k: sum(float(x[k]) for x in rs) / len(rs)
-                pts.append((c, float(rs[0]["eps_chi"]), avg("err_direct"), avg("err_dmpf"),
+                pts.append((c, _f(rs[0]["eps_chi"]), avg("err_direct"), avg("err_dmpf"),
                             avg("err_proj"), avg("err_best_single")))
             elif metric in by[c]:
                 x = by[c][metric]
-                pts.append((c, float(x["eps_chi"]), float(x["err_direct"]), float(x["err_dmpf"]),
+                pts.append((c, _f(x["eps_chi"]), float(x["err_direct"]), float(x["err_dmpf"]),
                             float(x["err_proj"]), float(x["err_best_single"])))
         if pts:
             M[metric] = pts
@@ -218,8 +241,10 @@ for T in TARGETS:
             f = lambda x: f"{x:>8.1f}" if x else f"{'--':>8}"
             print(f"  {g:>6} | {f(c8)} {f(c10)} {gr(c8, c10)} | {f(h8)} {f(h10)} {gr(h8, h10)}")
 print()
-print("  NOTE: at n=8 chi_classical* is capped at the 256 ceiling, so a '--' there")
-print("  usually means 'needs essentially the ceiling', which UNDERSTATES growth.")
+print("  NOTE: at n=8 a '--' for chi_classical* means the fitted target lies beyond the")
+print("  last grid point below the ceiling (192) -- and the ceiling (256) is exact, so")
+print("  the true value is BRACKETED in (192, 256]. The n=8 -> n=10 growth is then")
+print("  bracketed in [chi_n10/256, chi_n10/192]: e.g. gamma=0.01 gives 1.70-2.26.")
 
 if WRITE:
     with open("consolidated_chistar.csv", "w", newline="") as fh:

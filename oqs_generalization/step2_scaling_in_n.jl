@@ -75,6 +75,11 @@ order_ref     = parse(Int,     getenv("ORDER_REF", 4))
 splitting     = Symbol(getenv("SPLITTING",     "strang"))
 splitting_ref = Symbol(getenv("SPLITTING_REF", "strang"))
 evo_mode      = Symbol(getenv("EVO_MODE", "gates"))
+# :capped is the honest protocol -- bond dimension capped at chi at every gate,
+# no reference to the ceiling anywhere, so it runs at any n. :measured
+# reproduces the earlier runs (gates applied at the ceiling, one tracked
+# truncation per step), which gives an exact eps_chi but runs at ceiling cost.
+protocol      = Symbol(getenv("PROTOCOL", "capped"))
 ct            = parse(Float64, getenv("CUTOFF", EXACT_CUTOFF))
 tfac          = parse(Float64, getenv("TARGET_FACTOR", 1.5))
 tag           = getenv("TAG", "")
@@ -104,6 +109,9 @@ fam_name(ks) = join(ks, "-")
 @printf("  candidates: %s order %d      reference: %s order %d      mode=%s\n",
         splitting, order, splitting_ref, order_ref, evo_mode)
 @printf("  chi grid %s (capped per n at the ceiling 4^(n/2))\n", string(chi_grid))
+@printf("  protocol = %s%s\n", protocol,
+        protocol === :capped ? "  (bond dimension capped at chi at every gate; eps_chi not measured)" :
+                               "  (gates at the ceiling then one tracked truncation; CEILING COST)")
 @printf("  accuracy target = %.2f x err_proj(n)\n", tfac)
 for fks in families
     k0 % lcm(fks...) == 0 || @printf("  WARNING: k0=%d not a multiple of lcm(%s)=%d -- these coefficients will not\n           be cross-checkable against the MOC route.\n", k0, fam_name(fks), lcm(fks...))
@@ -111,7 +119,7 @@ end
 println()
 flush(stdout)
 
-rows = ["n,family,r,chi,at_ceiling,eps_chi,obs,O_exact,err_direct,err_dmpf,ratio,err_proj,err_best_single,cond_N,singular,relerr_N,dc_max,dcNdc,dc_frac_null,corr_min,time_s"]
+rows = ["n,family,r,chi,at_ceiling,eps_chi,obs,O_exact,err_direct,err_dmpf,err_dmpf_cl,ratio,err_proj,err_best_single,cond_N,singular,relerr_N,dc_max,dcNdc,dc_frac_null,corr_min,time_s"]
 summary = ["n,family,r,chi_ceiling,chi_rho_exact,ref_selferr,cond_N,lam_min,singular,E_mpf,err_proj,err_best_single,target,chi_direct_star,chi_dmpf_star,speedup,ratio_at_chi32,ratio_at_chi64"]
 
 # Smallest grid chi whose error is at or below `target`; linear interpolation in
@@ -184,7 +192,7 @@ for n in n_list
     t0 = time()
     e_ref = evolve_trotter(n, J, gammas, t, k0, lsites, rho0;
                            maxdim=ceil_n, order=order_ref, cutoff=ct,
-                           splitting=splitting_ref, mode=evo_mode, id_mps=O_id)
+                           splitting=splitting_ref, mode=evo_mode, protocol=protocol, id_mps=O_id)
     rho_ref = e_ref.rho
     @printf("  exact reference: chi_rho=%-5d (ceiling %d)  eps=%.2e  Tr=%+.12f  (%.0f s)\n",
             e_ref.chi, ceil_n, e_ref.eps, real(e_ref.trace), time() - t0)
@@ -206,7 +214,7 @@ for n in n_list
         t0 = time()
         e2 = evolve_trotter(n, J, gammas, t, 2 * k0, lsites, rho0;
                             maxdim=ceil_n, order=order_ref, cutoff=ct,
-                            splitting=splitting_ref, mode=evo_mode, id_mps=O_id)
+                            splitting=splitting_ref, mode=evo_mode, protocol=protocol, id_mps=O_id)
         d = mps_difference(rho_ref, e2.rho)
         nrm = sqrt(max(real(inner(rho_ref, rho_ref)), 0.0))
         ref_selferr = sqrt(max(real(inner(d, d)), 0.0)) / max(nrm, 1e-300)
@@ -221,7 +229,7 @@ for n in n_list
     for kj in all_ks
         rhos_exact[kj] = evolve_trotter(n, J, gammas, t, kj, lsites, rho0;
                                         maxdim=ceil_n, order=order, cutoff=ct,
-                                        splitting=splitting, mode=evo_mode, id_mps=O_id).rho
+                                        splitting=splitting, mode=evo_mode, protocol=protocol, id_mps=O_id).rho
     end
 
     O_exact = meas(rho_ref)
@@ -243,7 +251,7 @@ for n in n_list
         es    = [minimum(abs(Okj[a, j] - O_exact[a]) for j in 1:rf) for a in 1:n_obs]
         below = isfinite(ref_selferr) && ep[1] < ref_selferr
         fam[nm] = (ks=fks, r=rf, N=Nx, sol=sx, c=cx, Okj=Okj, ep=ep, es=es, below=below,
-                   ed=Float64[], eh=Float64[])
+                   ed=Float64[], eh=Float64[], ec=Float64[])
         @printf("  %-14s %3d | %.3e  %.3e  %.3e | %.4e  %.4e  %6.3f  %s%s%s\n",
                 nm, rf, sx.E_mpf, sx.cond, sx.lam_min, ep[1], es[1],
                 ep[1] / max(es[1], 1e-300),
@@ -263,21 +271,29 @@ for n in n_list
     # this no matter how bad the coefficients are; beating it is the real test.
     println("   chi | eps_chi  | err_direct | " *
             join([rpad("err_dmpf[" * fam_name(f) * "]", 15) for f in families]) *
-            "| free baseline")
+            "| classical-DMPF | free baseline")
     println("  " * "-"^(30 + 15 * length(families)))
 
     for chi in grid
         tA = time()
         er = evolve_trotter(n, J, gammas, t, k0, lsites, rho0;
                             maxdim=chi, order=order_ref, cutoff=ct,
-                            splitting=splitting_ref, mode=evo_mode, id_mps=O_id)
+                            splitting=splitting_ref, mode=evo_mode, protocol=protocol, id_mps=O_id)
         rhos_chi = Dict(kj => evolve_trotter(n, J, gammas, t, kj, lsites, rho0;
                                              maxdim=chi, order=order, cutoff=ct,
-                                             splitting=splitting, mode=evo_mode, id_mps=O_id).rho
+                                             splitting=splitting, mode=evo_mode, protocol=protocol, id_mps=O_id).rho
                         for kj in all_ks)
         el = time() - tA
 
         O_dir = meas(er.rho)
+        # THE FULLY-CLASSICAL DMPF CONTROL. The candidates are only k_j <= 16
+        # steps to the same total time, so they suffer far fewer truncation
+        # events than the 96-step reference and may be MORE accurate at the same
+        # chi. Combining them with c(chi) needs no device at all, so this curve
+        # is the competitor that separates "the coefficients are an easy
+        # classical target" from "the device values are exact". It costs nothing:
+        # the truncated candidate states are already in memory.
+        O_k_chi = Dict(kj => meas(rhos_chi[kj]) for kj in all_ks)
         ed1   = abs(O_dir[1] - O_exact[1])
 
         line = @sprintf("  %4d | %.2e | %.4e | ", chi, er.eps, ed1)
@@ -292,20 +308,24 @@ for n in n_list
             frc = pr[1] / max(norm(dc), 1e-300)
             cor = minimum([truncation_error_correlation(er.rho, rho_ref,
                            rhos_chi[kj], rhos_exact[kj]).corr for kj in fks])
+            Okj_chi = hcat([O_k_chi[kj] for kj in fks]...)   # n_obs x rf, truncated
 
             for a in 1:n_obs
                 ed  = abs(O_dir[a] - O_exact[a])
-                ehw = abs(sum(sc.coeffs[j] * F.Okj[a, j] for j in 1:rf) - O_exact[a])
-                a == 1 && (push!(F.ed, ed); push!(F.eh, ehw))
-                push!(rows, @sprintf("%d,%s,%d,%d,%s,%.6e,%s,%.10f,%.8e,%.8e,%.6f,%.8e,%.8e,%.6e,%s,%.6e,%.6e,%.6e,%.6f,%.6f,%.1f",
+                ehw = abs(sum(sc.coeffs[j] * F.Okj[a, j]  for j in 1:rf) - O_exact[a])
+                ehc = abs(sum(sc.coeffs[j] * Okj_chi[a, j] for j in 1:rf) - O_exact[a])
+                a == 1 && (push!(F.ed, ed); push!(F.eh, ehw); push!(F.ec, ehc))
+                push!(rows, @sprintf("%d,%s,%d,%d,%s,%.6e,%s,%.10f,%.8e,%.8e,%.8e,%.6f,%.8e,%.8e,%.6e,%s,%.6e,%.6e,%.6e,%.6f,%.6f,%.1f",
                                      n, nm, rf, chi, chi == ceil_n ? "yes" : "no", er.eps,
-                                     obs_names[a], O_exact[a], ed, ehw, ed / max(ehw, 1e-300),
+                                     obs_names[a], O_exact[a], ed, ehw, ehc, ed / max(ehw, 1e-300),
                                      F.ep[a], F.es[a], sc.cond, sc.singular, rel,
                                      maximum(abs.(dc)), dcN, frc, cor, el))
             end
             line *= @sprintf("%.4e%s   ", F.eh[end], sc.singular ? "*" : " ")
         end
-        println(line, @sprintf("| %.4e", fam[fam_name(families[1])].es[1]),
+        println(line, @sprintf("|   %.4e   | %.4e",
+                               fam[fam_name(families[1])].ec[end],
+                               fam[fam_name(families[1])].es[1]),
                 chi == ceil_n ? "  (exact)" : "")
         flush(stdout)
     end
@@ -313,19 +333,21 @@ for n in n_list
 
     # ---- chi* at a common accuracy target, per family -----------------------
     println()
-    @printf("  %-14s %-11s | %-10s %-10s %-8s | %-9s %-9s\n",
-            "family", "target", "chi_direct*", "chi_dmpf*", "speedup", "r@chi=32", "r@chi=64")
-    println("  " * "-"^84)
+    @printf("  %-14s %-11s | %-10s %-10s %-11s %-8s | %-9s %-9s\n",
+            "family", "target", "chi_direct*", "chi_dmpf*", "chi_dmpfcl*", "speedup",
+            "r@chi=32", "r@chi=64")
+    println("  " * "-"^97)
     for fks in families
         nm = fam_name(fks); F = fam[nm]
         target = tfac * F.ep[1]
         csd = chi_star(grid, F.ed, target)
         csh = chi_star(grid, F.eh, target)
+        csc = chi_star(grid, F.ec, target)   # fully-classical DMPF control
         i32 = findfirst(==(32), grid); i64 = findfirst(==(64), grid)
         r32 = i32 === nothing ? NaN : F.ed[i32] / max(F.eh[i32], 1e-300)
         r64 = i64 === nothing ? NaN : F.ed[i64] / max(F.eh[i64], 1e-300)
-        @printf("  %-14s %.4e | %-10s %-10s %-8s | %9.3f %9.3f\n", nm, target,
-                fmt_chi(csd), fmt_chi(csh),
+        @printf("  %-14s %.4e | %-10s %-10s %-11s %-8s | %9.3f %9.3f\n", nm, target,
+                fmt_chi(csd), fmt_chi(csh), fmt_chi(csc),
                 (csd > 0 && csh > 0 && isfinite(csd) && isfinite(csh)) ? @sprintf("%.2fx", csd / csh) : "n/a",
                 r32, r64)
         push!(summary, @sprintf("%d,%s,%d,%d,%d,%.6e,%.6e,%.6e,%s,%.8e,%.8e,%.8e,%.8e,%s,%s,%s,%.6f,%.6f",
