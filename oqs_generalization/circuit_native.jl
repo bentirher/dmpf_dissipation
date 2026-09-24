@@ -303,6 +303,38 @@ mpdo_expectation_Z(n::Int, theta::Float64, p::Float64, k::Int, site::Int; kw...)
     mpdo_expectation_Z_all(n, theta, p, k; kw...)[site]
 
 
+"""
+    circuit_observables(n, theta, p, k; ...) -> NamedTuple
+
+Observables of the final state, beyond the single-site <Z_j> used so far:
+
+  z          every <Z_j>
+  mz         total magnetisation (1/n) sum_j <Z_j>
+  zz_nn      nearest-neighbour correlator, averaged over bonds
+  zz_half    <Z_1 Z_{n/2}>, a half-chain correlator
+  zz_end     <Z_1 Z_n>, the longest-range one available
+
+Two-point functions are the right thing to test a Trotter step against: they are
+built from higher-weight operators than <Z_j> and therefore feel discretisation
+error that single-site observables average away. The n=8 fidelity runs already
+showed <Z_j> agreeing to 6% while the trace distance was ~0.5, i.e. the states
+differed far more than the one-site observables suggested.
+"""
+function circuit_observables(n::Int, theta::Float64, p::Float64, k::Int;
+                             cutoff::Float64=1e-12, maxdim::Int=1024,
+                             excited=:neel, lsites=nothing)
+    rho, ls = mpdo_run(n, theta, p, k; cutoff=cutoff, maxdim=maxdim,
+                       excited=excited, lsites=lsites)
+    tr = inner(identity_vectorized_mps(ls), rho)
+    zop(js) = local_op_vectorized_mps(ls,
+                  Dict{Int,Matrix{ComplexF64}}(j => SIGMA_Z for j in js))
+    ev(js) = real(inner(zop(js), rho) / tr)
+    z  = [ev([j]) for j in 1:n]
+    nn = [ev([j, j+1]) for j in 1:n-1]
+    return (z=z, mz=sum(z)/n, zz_nn=sum(nn)/length(nn), zz_nn_all=nn,
+            zz_half=ev([1, max(2, n÷2)]), zz_end=ev([1, n]), lsites=ls)
+end
+
 # =============================================================================
 # STEP 2 helpers: hardness and faithfulness as functions of the gate angle
 # =============================================================================

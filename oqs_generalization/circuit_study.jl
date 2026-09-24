@@ -11,6 +11,9 @@
 #                  Where does it stop being physics?
 #   MODE=damping   Step 3.  Sweep p at the chosen theta.
 #   MODE=scaling   Step 4.  Sweep n at the chosen (theta, p).
+#   MODE=ksweep    Trotter-step convergence at FIXED physics (J*t and gamma*t
+#                  held constant while k varies), measured on magnetisation and
+#                  two-point correlators.
 #   MODE=map       The 2D (theta, p) colormap. Subsumes MODE=theta and
 #                  MODE=damping -- both are one-dimensional slices of it.
 #   MODE=headtohead  A self-contained MPDO-vs-trajectory comparison at small n,
@@ -443,6 +446,62 @@ function run_map()
 end
 
 # =============================================================================
+function run_ksweep()
+    # HOW COARSE CAN THE TROTTER STEP BE?
+    #
+    # Hold the PHYSICS fixed and vary only the discretisation. The physics is
+    # the J-independent pair
+    #     J t     = k*theta/2
+    #     gamma t = -k*ln(1-p)
+    # so holding both fixed while changing k means
+    #     theta(k) = theta0 * k0/k ,   p(k) = 1 - (1-p0)^(k0/k)
+    # Every k below is therefore the SAME master equation, discretised more or
+    # less finely -- which is exactly the comparison "is k=10 enough?" needs.
+    #
+    # Observables are magnetisation AND two-point correlators, not just <Z_j>.
+    # Higher-weight operators feel discretisation error that single-site
+    # averages wash out: the n=8 runs had <Z_j> agreeing to 6% while the trace
+    # distance was ~0.5.
+    k0, th0, p0 = k, thetafx, pfix
+    Jt, gt = k0*th0/2, -k0*log(1-p0)
+    ks = parse.(Int, split(getenv("KLIST","2,3,4,5,6,8,10,14,20,30"), ","))
+    kr = kref
+    @printf("holding J*t = %.4f and gamma*t = %.4f fixed (from k=%d, theta=%.4f, p=%.4f)\n",
+            Jt, gt, k0, th0, p0)
+    @printf("reference: k = %d\n\n", kr)
+
+    thof(kk) = 2*Jt/kk
+    pof(kk)  = 1 - exp(-gt/kk)
+    ref = circuit_observables(n, thof(kr), pof(kr), kr; cutoff=cutoff,
+                              maxdim=maxdim_mpdo, excited=excited)
+
+    rows = ["n,k,theta,p,Jt,gamma_t,mz,zz_nn,zz_half,zz_end," *
+            "err_mz,err_zz_nn,err_zz_half,err_zz_end,err_z_max"]
+    @printf("%5s %8s %8s | %10s %10s %10s %10s %10s\n",
+            "k","theta","p","err mz","err zz_nn","err zz_half","err zz_end","err max|z|")
+    println("-"^80)
+    for kk in ks
+        o = circuit_observables(n, thof(kk), pof(kk), kk; cutoff=cutoff,
+                                maxdim=maxdim_mpdo, excited=excited)
+        e = (mz=abs(o.mz-ref.mz), nn=abs(o.zz_nn-ref.zz_nn),
+             hf=abs(o.zz_half-ref.zz_half), en=abs(o.zz_end-ref.zz_end),
+             zz=maximum(abs.(o.z .- ref.z)))
+        @printf("%5d %8.4f %8.4f | %10.3e %10.3e %10.3e %10.3e %10.3e\n",
+                kk, thof(kk), pof(kk), e.mz, e.nn, e.hf, e.en, e.zz); flush(stdout)
+        push!(rows, join([n,kk,@sprintf("%.6f",thof(kk)),@sprintf("%.6f",pof(kk)),
+            @sprintf("%.6f",Jt),@sprintf("%.6f",gt),
+            @sprintf("%.8f",o.mz),@sprintf("%.8f",o.zz_nn),
+            @sprintf("%.8f",o.zz_half),@sprintf("%.8f",o.zz_end),
+            @sprintf("%.6e",e.mz),@sprintf("%.6e",e.nn),@sprintf("%.6e",e.hf),
+            @sprintf("%.6e",e.en),@sprintf("%.6e",e.zz)],","))
+    end
+    f = joinpath(outdir,"ksweep_n$(n)$(sfx).csv")
+    write(f, join(rows,"\n")*"\n"); @printf("\nwrote %s\n", f)
+    println("\nRead the largest k you can afford off the correlator columns, not")
+    println("the magnetisation one -- mz converges first and flatters the circuit.")
+end
+
+# =============================================================================
 if     mode == "theta";    run_theta()
 elseif mode == "mpdoladder"; run_mpdoladder()
 elseif mode == "fidelity"; run_fidelity()
@@ -450,6 +509,7 @@ elseif mode == "damping";  run_damping()
 elseif mode == "scaling";  run_scaling()
 elseif mode == "headtohead"; run_headtohead()
 elseif mode == "map";      run_map()
-else error("MODE must be one of: theta, fidelity, damping, scaling, mpdoladder, headtohead, map. Got '$mode'.")
+elseif mode == "ksweep";   run_ksweep()
+else error("MODE must be one of: theta, fidelity, damping, scaling, mpdoladder, headtohead, map, ksweep. Got '$mode'.")
 end
 println("\n[stage] done"); flush(stdout)

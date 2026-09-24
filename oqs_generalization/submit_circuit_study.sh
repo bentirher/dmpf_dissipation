@@ -10,6 +10,10 @@
 #
 #   OUTSTANDING:
 #     24        the (theta, p) colormap          <-- run this first
+#     28,29,30  the map at n = 8, 12, 20. NOW THE PRIORITY: at n=16 the low-p
+#               band is at the finite-size ceiling 2^(n/2)=256 (chi/256 = 0.94
+#               to 0.98), so its theta structure is washed out.
+#     31        Trotter-step convergence at fixed physics, on correlators.
 #     25,26,27  the EXPONENT at other (theta, p) points. chi was optimised at
 #               n=16; hardware is at n~40, where the exponent decides. ~6 min each.
 #     16,17     untruncated MPDO-vs-trajectory table, for the write-up
@@ -86,6 +90,49 @@ case $SLURM_ARRAY_TASK_ID in
   27) export MODE=scaling NLIST=8,12,16 THETA=2.10 P=0.05 NTRAJ=64 EXCITED=random
       export MAXDIM_TRAJ=4096 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
       export OUTDIR=ckt_exp_th21 TAG=th21 ;;
+
+  # --- THE MAP AT OTHER SYSTEM SIZES (28-30) -------------------------------
+  #
+  # WHY THIS IS NOW THE PRIORITY. At n=16 the low-p band is FINITE-SIZE
+  # SATURATED: the pure-state half-cut ceiling is 2^(n/2) = 256 and chi/256 runs
+  # 0.94-0.98 for p <= 0.02 across theta in [0.5,1.25]. The theta structure is
+  # washed out there and chi(p=0) understates the closed-system cost, so every
+  # "damping costs X%" number from the n=16 map is an upper bound.
+  #
+  # n=8 and n=12 are nearly free (wall/traj 9 s and 13 s) so they get the full
+  # grid. n=20 does NOT: wall/traj extrapolates to ~1250 s, and 117 cells x 2
+  # waves would be ~80 h. It gets a coarse grid instead -- enough to test
+  # whether the STRUCTURE (peak location, the pi/2 column, monotonicity in p)
+  # moves with n, which is the actual question.
+  28) export MODE=map N=8  K=10 NTRAJ=32 EXCITED=random
+      export MAXDIM_TRAJ=2048 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
+      export THETAS=0.20,0.35,0.50,0.65,0.80,0.95,1.10,1.25,1.40,1.5708,1.90,2.10,2.40
+      export PLIST=0.0,0.005,0.01,0.02,0.035,0.05,0.08,0.12,0.20
+      export OUTDIR=ckt_map_n8 TAG=m8 ;;
+  29) export MODE=map N=12 K=10 NTRAJ=32 EXCITED=random
+      export MAXDIM_TRAJ=2048 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
+      export THETAS=0.20,0.35,0.50,0.65,0.80,0.95,1.10,1.25,1.40,1.5708,1.90,2.10,2.40
+      export PLIST=0.0,0.005,0.01,0.02,0.035,0.05,0.08,0.12,0.20
+      export OUTDIR=ckt_map_n12 TAG=m12 ;;
+  # Coarse grid, 7 x 5 = 35 cells, NTRAJ=16 (one wave). ~12 h: submit with
+  #     sbatch --time=16:00:00 --array=30 submit_circuit_study.sh
+  30) export MODE=map N=20 K=10 NTRAJ=16 EXCITED=random
+      export MAXDIM_TRAJ=4096 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
+      export THETAS=0.35,0.65,0.95,1.25,1.5708,2.10,2.40
+      export PLIST=0.0,0.02,0.05,0.12,0.20
+      export OUTDIR=ckt_map_n20 TAG=m20 ;;
+
+  # --- TROTTER STEP AT FIXED PHYSICS (31) ----------------------------------
+  # Holds J*t = k*theta/2 and gamma*t = -k*ln(1-p) fixed at the operating point
+  # and varies k, so every k is the SAME master equation discretised differently.
+  # Measures magnetisation AND two-point correlators -- the higher-weight ones
+  # feel discretisation error that single-site averages wash out.
+  # MPDO-only and n=10, so it is minutes. BLAS gets the cores here because one
+  # large SVD is the job, not many small trajectories.
+  31) export MODE=ksweep N=10 K=10 THETA=0.95 P=0.05 EXCITED=random
+      export MAXDIM_MPDO=1024 KREF=200 BLAS_THREADS=16
+      export KLIST=2,3,4,5,6,8,10,14,20,30
+      export OUTDIR=ckt_ksweep TAG=n10 ;;
 
   # --- THE COLORMAP. One job, and it replaces both the theta sweep and the
   # damping sweep: each is a one-dimensional slice of this grid.
