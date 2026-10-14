@@ -502,7 +502,78 @@ function run_ksweep()
 end
 
 # =============================================================================
+function run_depth()
+    # WHERE THE HARDNESS ACTUALLY LIVES.
+    #
+    # The (theta, p) maps at n = 8, 12, 16, 20 answered a question that turned
+    # out not to be the binding one. Across the whole plateau theta in
+    # [0.65, 2.4] (excluding theta = pi/2) the fitted exponent beta = dln(chi)/dn
+    # sits at 0.32-0.34 against a ceiling slope of ln2/2 = 0.3466, i.e. chi is
+    # simply tracking 2^(n/2): the circuit is already as entangling as the
+    # Hilbert space allows and no choice of theta makes it more so. Exact
+    # statevector runs at theta = 0.95, p = 0, k = 10 give chi/2^(n/2) =
+    # 0.951, 0.953, 0.948, 0.936 at n = 18, 20, 22, 24 -- flat to 1.5% over six
+    # sites.
+    #
+    # So theta is not a hardness knob; it is a "do not pick these" list. The two
+    # real knobs are n and k, and k is the one the hardware constrains. The
+    # analytic cap is
+    #     chi <= 4^k ,   S <= 2k bits
+    # because exactly one two-site gate (operator Schmidt rank 4) crosses any
+    # given cut per Trotter step. At k = 10 that cap is 4^10 ~ 1.0e6, and
+    # 2^(n/2) only reaches 1.0e6 at n = 40. Below n = 40 the Hilbert ceiling
+    # binds; above it depth binds, and chi stops growing with n altogether.
+    #
+    # This mode measures chi(n, k) so the roll-over is seen rather than inferred
+    # from a bound. Fix theta and p, sweep k and n, and read off the smallest k
+    # at which chi(n,k) stops tracking min(2^(n/2), 4^k). That is the depth the
+    # hardware has to deliver for the run to be worth doing.
+    #
+    # NOTE ON WHAT IS HELD FIXED. Unlike `ksweep`, this does NOT hold the physics
+    # fixed. Each k here is a LONGER evolution at the same step: J*t = k*theta/2
+    # and gamma*t = -k*ln(1-p) both grow linearly in k. That is the right
+    # comparison for "how deep must my circuit be" and the wrong one for "is my
+    # Trotter step small enough" -- use `ksweep` for the latter.
+    ks = parse.(Int, split(getenv("KLIST","2,4,6,8,10,12,14,16"), ","))
+    rows = ["n,k,theta,p,Jt,gamma_t,S_traj_mean,S_traj_p95,chi_mean,chi_sem," *
+            "chi_max,chi3_mean,ceiling_hilbert,ceiling_depth,frac_ceiling," *
+            "censored,saturated,wall_s"]
+    @printf("theta=%.4f  p=%.4f  Ntraj=%d\n", thetafx, pfix, ntraj)
+    @printf("ceilings: Hilbert 2^(n/2), depth 4^k.  Printed as chi(frac of the tighter)\n\n")
+    @printf("%6s |", "k")
+    for nn in nlist; @printf("  n=%-11d", nn); end
+    println("\n" * "-"^(8 + 14*length(nlist)))
+    for kk in ks
+        @printf("%6d |", kk)
+        for nn in nlist
+            e = circuit_trajectory_ensemble(nn, thetafx, pfix, kk, ntraj;
+                                            cutoff=cutoff_traj, maxdim=maxdim_traj,
+                                            excited=excited, verbose=false)
+            f = e.series[end]
+            ch = 2.0^(nn ÷ 2); cd = 4.0^kk; cl = min(ch, cd)
+            @printf(" %7.1f(%.2f)%s", f.chi_mean, f.chi_mean/cl, f.censored ? "*" : " ")
+            push!(rows, join([nn,kk,@sprintf("%.6f",thetafx),@sprintf("%.6f",pfix),
+                @sprintf("%.6f",kk*thetafx/2),@sprintf("%.6f",-kk*log(1-pfix)),
+                @sprintf("%.6f",f.S_mean),@sprintf("%.6f",f.S_p95),
+                @sprintf("%.4f",f.chi_mean),@sprintf("%.4f",f.chi_sem),
+                @sprintf("%.0f",f.chi_max),@sprintf("%.6e",f.chi3_mean),
+                @sprintf("%.0f",ch),@sprintf("%.6e",cd),
+                @sprintf("%.4f",f.chi_mean/cl),
+                f.censored,f.saturated,@sprintf("%.2f",mean(e.walltime))],","))
+        end
+        println(); flush(stdout)
+        write(joinpath(outdir,"depth$(sfx).csv"), join(rows,"\n")*"\n")
+    end
+    @printf("\nwrote %s\n", joinpath(outdir,"depth$(sfx).csv"))
+    println("frac ~ 0.95 means chi is still pinned to min(2^(n/2), 4^k): the circuit")
+    println("is maximally entangling and the only knob is that ceiling. frac falling")
+    println("well below 1 at fixed k is the roll-over -- past that n, more qubits buy")
+    println("no extra classical cost and the experiment should spend its budget on k.")
+end
+
+# =============================================================================
 if     mode == "theta";    run_theta()
+elseif mode == "depth";    run_depth()
 elseif mode == "mpdoladder"; run_mpdoladder()
 elseif mode == "fidelity"; run_fidelity()
 elseif mode == "damping";  run_damping()
@@ -510,6 +581,6 @@ elseif mode == "scaling";  run_scaling()
 elseif mode == "headtohead"; run_headtohead()
 elseif mode == "map";      run_map()
 elseif mode == "ksweep";   run_ksweep()
-else error("MODE must be one of: theta, fidelity, damping, scaling, mpdoladder, headtohead, map, ksweep. Got '$mode'.")
+else error("MODE must be one of: theta, depth, fidelity, damping, scaling, mpdoladder, headtohead, map, ksweep. Got '$mode'.")
 end
 println("\n[stage] done"); flush(stdout)

@@ -1,39 +1,76 @@
 #!/bin/bash
 # =============================================================================
-# STATUS -- only two things are still outstanding.
+# STATUS
+#
+#   THE PARAMETER SEARCH IS OVER, AND IT CAME BACK NEGATIVE ON theta.
+#
+#   The four maps (n = 8, 12, 16, 20; tasks 24, 28, 29, 30) are all in, and the
+#   conclusion is that (theta, p) is not where the hardness lives. Fitting
+#   beta = dln(chi)/dn on the cells that are NOT pinned at 2^(n/2):
+#
+#       p      theta=0.35   0.65   0.95   1.25   pi/2    2.1    2.4
+#       0.02      0.211    0.330  0.338  0.319  -0.108  0.325  0.332
+#       0.05      0.220    0.306  0.320  0.302  -0.076  0.313  0.309
+#       0.12      0.159    0.252  0.273  0.264  -0.028  0.272  0.270
+#       0.20      0.097    0.192  0.200  0.189  -0.008  0.206  0.207
+#
+#   against a ceiling slope of ln2/2 = 0.3466. On the whole plateau theta in
+#   [0.65, 2.4] the exponent is 92-97% of that ceiling at p <= 0.05 and the
+#   spread ACROSS theta is under 5% -- smaller than the scatter over random
+#   initial states. chi is just tracking 2^(n/2). Verified independently by
+#   exact statevector at theta=0.95, p=0, k=10: chi/2^(n/2) = 0.951, 0.953,
+#   0.948, 0.936 at n = 18, 20, 22, 24.
+#
+#   So theta is a "do not pick these" list, not an optimisation target:
+#     * theta <~ 0.5 is genuinely cheaper (beta ~ 0.21): the light cone is too
+#       short at k=10 to cross the chain.
+#     * theta = pi/2 is structurally simulable -- rzz(2*theta) becomes the Pauli
+#       ZZ and the XY part becomes a full iSWAP, leaving a matchgate (free
+#       fermion) and Clifford circuit. beta is NEGATIVE there: chi falls from 32
+#       at n=16 to 2 at n=20 (an exact revival), reproduced exactly offline.
+#     * everything else in [0.65, 2.4] is equivalent to within the error bars.
+#       theta = 0.95 is the nominal argmax and 2.4 ties with it.
+#
+#   WHAT IS LEFT, therefore, is depth. The analytic cap is chi <= 4^k (one
+#   rank-4 two-site gate crosses any cut per Trotter step), so k=10 caps chi at
+#   4^10 ~ 1.0e6, and 2^(n/2) only reaches 1.0e6 at n = 40. That makes n = 40
+#   the point where more qubits stop buying classical cost at k = 10.
+#
+#   OUTSTANDING, in priority order:
+#     40,41,42  MODE=depth -- chi(n, k) at the chosen (theta, p). THE measurement
+#               the maps could not give. Run 40 first; it is ~2 h.
+#     31        Trotter-step convergence at fixed physics, on correlators. This
+#               is now the other half of the story: task 40 says how deep the
+#               circuit must be to be hard, task 31 says how coarse the step may
+#               be before the circuit stops representing the master equation.
+#               If those two windows do not overlap, there is no experiment.
+#     43        map at n=24 on the plateau only, to extend the beta fit one point.
+#     16,17     untruncated MPDO-vs-trajectory table, for the write-up.
 #
 #   DONE, do not rerun:
 #     0,1,5,6   theta sweeps at n=16 and n=24, Neel / |+> / random
 #     2,9,11    fidelity curves (max|dZ|, HS distance, trace distance)
 #     10        n=24 anchor: chi_traj >= 1741 (capped at 2048)
 #     18,19,20  n-scaling: chi_traj = 13.8 / 48.8 / 168.6 at n = 8 / 12 / 16
-#
-#   OUTSTANDING:
-#     24        the (theta, p) colormap          <-- run this first
-#     28,29,30  the map at n = 8, 12, 20. NOW THE PRIORITY: at n=16 the low-p
-#               band is at the finite-size ceiling 2^(n/2)=256 (chi/256 = 0.94
-#               to 0.98), so its theta structure is washed out.
-#     31        Trotter-step convergence at fixed physics, on correlators.
-#     25,26,27  the EXPONENT at other (theta, p) points. chi was optimised at
-#               n=16; hardware is at n~40, where the exponent decides. ~6 min each.
-#     16,17     untruncated MPDO-vs-trajectory table, for the write-up
+#     24,28-30  the (theta, p) maps at n = 16, 8, 12, 20
 #
 #   ABANDONED, and why:
-#     3,4       MODE=damping and the multi-n MODE=scaling. Both are subsumed:
-#               damping is a slice of task 24, and the scaling ladder is done.
-#     21,22,23  n = 20, 24, 28 scaling. n=24 cost 7.4 h for ONE trajectory and
-#               n=28 extrapolates to ~158 h. n=24 is the cluster ceiling and
-#               tasks 18-20 already pin the exponent.
+#     3,4       MODE=damping and the multi-n MODE=scaling: damping is a slice of
+#               the map and the scaling ladder is done.
+#     21,22,23  n = 20, 24, 28 scaling. n=24 cost 7.4 h for ONE trajectory.
+#     25,26,27  the exponent at other (theta, p) points. Superseded: the maps
+#               give beta at 35 (theta, p) points at once, which is what these
+#               three were for.
 #
 # THE SCALING RESULT, since it is what everything else was for:
-#     ln(chi_traj) = 0.313 n + 0.13   from the three uncensored points
-#                                     (local slopes 0.3158, 0.3099 -- flat)
-#     predicts 2068 at n=24; measured >= 1741 at a cap of 2048. Consistent.
-#     The continuum operating line gave 0.221 per site, so the hardware circuit
-#     is STEEPER, and N*chi^3 crosses 1e18 at n ~ 37 rather than ~47.
+#     ln(chi_traj) = 0.3198 n + 0.07   at theta = 0.95, p = 0.05, k = 10
+#     => chi = 643 (n=20), 2.3e3 (n=24), 8.3e3 (n=28), 1.6e4 (n=30)
+#     => N*chi^3 crosses 1e18 at n ~ 28, and the 64 GB-per-node memory wall
+#        (n*d*chi^2*16 B) arrives first, at n ~ 28.
+#     So the classical frontier at k=10 is n = 26-30, NOT n = 40.
 #
-#   sbatch --array=24    submit_circuit_study.sh   # the colormap, ~4 h
-#   sbatch --array=16,17 submit_circuit_study.sh   # the head-to-head table
+#   sbatch --array=40    submit_circuit_study.sh   # chi(n,k), ~2 h
+#   sbatch --array=31    submit_circuit_study.sh   # Trotter step vs correlators
 # =============================================================================
 #SBATCH --job-name=cktstudy
 #SBATCH --qos=regular
@@ -121,6 +158,59 @@ case $SLURM_ARRAY_TASK_ID in
       export THETAS=0.35,0.65,0.95,1.25,1.5708,2.10,2.40
       export PLIST=0.0,0.02,0.05,0.12,0.20
       export OUTDIR=ckt_map_n20 TAG=m20 ;;
+
+  # --- DEPTH: chi(n, k) AT THE CHOSEN POINT (40-42) -------------------------
+  #
+  # The one measurement the maps cannot give. theta is settled (0.95, anywhere
+  # on the [0.65, 2.4] plateau would do), so sweep the two knobs that are left.
+  #
+  # Each row of the printed table is one k; each column one n. The number in
+  # brackets is chi / min(2^(n/2), 4^k). While that stays near 0.95 the circuit
+  # is maximally entangling and the ceiling is the only thing setting the cost.
+  # The n at which it falls clearly below 1 at fixed k = 10 is the point past
+  # which extra qubits buy NO extra classical cost -- the thing that decides
+  # whether a 40-qubit run is more interesting than a 28-qubit one.
+  #
+  # p = 0.05 is chosen WITHOUT reference to any J. The only damping quantity the
+  # circuit defines by itself is the per-qubit probability that the channel has
+  # fired at least once over the whole run, D = 1 - (1-p)^k, which is the
+  # `total_damping` column in the map CSVs. At k=10:
+  #     p    0.02   0.05   0.12   0.20
+  #     D    0.18   0.40   0.72   0.89
+  #     beta 0.338  0.320  0.273  0.200     (ceiling ln2/2 = 0.3466)
+  # D ~ 0.4 is large enough that the dissipation shapes the state and small
+  # enough that it has not driven everything toward |0...0>, and it costs only
+  # 8% of the entanglement exponent. (The continuum operating line would have
+  # said p = 0.0611; that it lands in the same place is a cross-check, not an
+  # input, and nothing here depends on it.)
+  #
+  # Cost: n <= 20 at k <= 16 with NTRAJ=16 is ~2 h. 41 extends k at small n only
+  # (cheap, and k=24 at n=12 is where the depth bound 4^k stops binding). 42 is
+  # the expensive one -- n=24 at k=16 means chi ~ 4e3 -- so it gets its own
+  # longer wall and a coarse k list.
+  40) export MODE=depth NLIST=8,12,16,20 K=10 THETA=0.95 P=0.05 EXCITED=random
+      export NTRAJ=16 MAXDIM_TRAJ=4096 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
+      export KLIST=2,4,6,8,10,12,14,16
+      export OUTDIR=ckt_depth TAG=d1 ;;
+  41) export MODE=depth NLIST=8,12,16 K=10 THETA=0.95 P=0.05 EXCITED=random
+      export NTRAJ=16 MAXDIM_TRAJ=4096 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
+      export KLIST=18,20,24,28,32
+      export OUTDIR=ckt_depth_deep TAG=d2 ;;
+  # sbatch --time=23:00:00 --array=42 submit_circuit_study.sh
+  42) export MODE=depth NLIST=22,24 K=10 THETA=0.95 P=0.05 EXCITED=random
+      export NTRAJ=8 MAXDIM_TRAJ=8192 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
+      export KLIST=8,10,12,14
+      export OUTDIR=ckt_depth_big TAG=d3 ;;
+
+  # --- 43: one more n for the beta fit, plateau theta only -------------------
+  # Drops theta = 0.35 and pi/2 (both settled) and p = 0, which is pinned at the
+  # ceiling at every n and so contributes nothing to the fit. 4 theta x 4 p = 16
+  # cells at n=24. Expensive: chi ~ 4e3 at p=0.02. Give it 23 h.
+  43) export MODE=map N=24 K=10 NTRAJ=8 EXCITED=random
+      export MAXDIM_TRAJ=8192 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
+      export THETAS=0.65,0.95,1.25,2.40
+      export PLIST=0.02,0.05,0.12,0.20
+      export OUTDIR=ckt_map_n24 TAG=m24 ;;
 
   # --- TROTTER STEP AT FIXED PHYSICS (31) ----------------------------------
   # Holds J*t = k*theta/2 and gamma*t = -k*ln(1-p) fixed at the operating point
