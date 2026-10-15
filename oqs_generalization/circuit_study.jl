@@ -502,6 +502,154 @@ function run_ksweep()
 end
 
 # =============================================================================
+function run_evolve()
+    # THE HARDWARE BASELINE.
+    #
+    # Produces the two curves every hardware run has to be plotted against, for
+    # the Option-B protocol (fixed Trotter step, time advanced by repeating the
+    # layer -- so step s IS the time point, J*t = s*theta/2 and
+    # gamma*t = -s*ln(1-p)):
+    #
+    #   TROTTER   the k-step circuit the device will execute, measured after
+    #             every one of its steps s = 0, 1, ..., k.
+    #   REFERENCE the same physical evolution (same J*t and gamma*t at every s)
+    #             resolved with MREF substeps per circuit step, i.e. k*MREF
+    #             total. With MREF=20 and k=10 that is the 200-step reference
+    #             the ksweep used. This is "quasi-exact": a Trotterisation fine
+    #             enough that its own discretisation error is below the number
+    #             you are quoting.
+    #
+    # The substep angles are the ones that keep BOTH invariants exactly:
+    #     theta_fine = theta / MREF            (J*t adds linearly)
+    #     p_fine     = 1 - (1-p)^(1/MREF)      (so 1-(1-p_fine)^MREF = p exactly)
+    # so the reference passes through precisely the same (J*t, gamma*t) points
+    # as the circuit, and the two are compared at matched physical times rather
+    # than at matched step counts.
+    #
+    # WHY A THIRD RUN. "Quasi-exact" is a claim, not a fact, so the reference is
+    # run twice -- at MREF and at MREF/2 -- and the difference between them is
+    # reported per step as ref_err_*. That is the reference's own error bar. If
+    # ref_err is not much smaller than the Trotter error you are trying to
+    # measure, MREF is too small and the comparison is meaningless. Check that
+    # column before believing any other.
+    #
+    # ROUTE. MPDO (vectorised density matrix), not trajectories: it is
+    # deterministic, so the curves carry no sampling noise and small Trotter
+    # differences are visible. The cost is the local dimension 4, which confines
+    # this to n <~ 14. That limit is not a defect -- a quasi-exact reference can
+    # only exist where the problem is easy, and the whole point of the hardness
+    # study is that no such reference exists at the sizes you want to run. Use
+    # this at n = 8-12 to characterise and validate the Trotter error, then
+    # carry that characterisation to the large-n hardware run where only the
+    # circuit itself can be evaluated.
+    #
+    # Environment: N, K, THETA, P, MREF, EXCITED, MAXDIM_MPDO, CUTOFF
+    mref = parse(Int, getenv("MREF", 20))
+    @assert iseven(mref) "MREF must be even so the MREF/2 self-check is an integer"
+    md = maxdim_mpdo
+
+    @printf("n=%d  k=%d  theta=%.4f  p=%.4f  MREF=%d  maxdim=%d  cutoff=%.1e\n",
+            n, k, thetafx, pfix, mref, md, cutoff)
+    @printf("invariants per step: J*t += %.4f,  gamma*t += %.4f\n",
+            thetafx/2, -log(1-pfix))
+    @printf("reference: %d substeps total (and %d for the self-check)\n",
+            k*mref, k*mref÷2)
+    # Written BEFORE any evolution, so a job that later times out still leaves
+    # behind the state-preparation layer it was using. Without this the
+    # `random` initial state is reproducible only inside Julia, and the curves
+    # below cannot be compared to anything a device prepares.
+    write_initial_state_card(joinpath(outdir, "initial_state_n$(n)$(sfx).csv"),
+                             n, excited)
+    println()
+    flush(stdout)
+
+    # One evolution, snapshotting observables every `every` steps.
+    function series(theta_s, p_s, nsteps, every)
+        ls  = liouville_siteinds(n)
+        rho = vectorized_product_mps(ls, initial_kets(n, excited))
+        U   = circuit_bond_matrix(theta_s)
+        odd  = vcat([unitary_channel_gates(U, [j, j+1], ls) for j in 1:2:n-1]...)
+        even = n > 2 ? vcat([unitary_channel_gates(U, [j, j+1], ls) for j in 2:2:n-1]...) :
+                       ITensor[]
+        damp = p_s > 0 ?
+            [amplitude_damping_gate(1.0, -log(1-p_s), j, ls) for j in 1:n] : ITensor[]
+        out = NamedTuple[]
+        push!(out, merge(mpdo_observables(rho, ls),
+                         (step=0, chi=1, linkdim=1, S_op=0.0, saturated=false)))
+        for s in 1:nsteps
+            rho = apply(odd, rho; cutoff=cutoff, maxdim=md)
+            !isempty(even) && (rho = apply(even, rho; cutoff=cutoff, maxdim=md))
+            !isempty(damp) && (rho = apply(damp, rho; cutoff=cutoff, maxdim=md))
+            (s % every == 0) || continue
+            r = bond_report(rho, [1e-6])
+            push!(out, merge(mpdo_observables(rho, ls),
+                             (step = s ÷ every, chi = r.chi_req_max[1],
+                              linkdim = r.linkdim_max, S_op = r.S_op_max,
+                              saturated = r.linkdim_max >= md)))
+            flush(stdout)
+        end
+        return out
+    end
+
+    t0 = time(); trot = series(thetafx, pfix, k, 1)
+    @printf("trotter   done in %7.1f s\n", time()-t0); flush(stdout)
+    pf(m)  = 1 - (1-pfix)^(1/m)
+    t0 = time(); ref  = series(thetafx/mref,   pf(mref),   k*mref,   mref)
+    @printf("reference done in %7.1f s  (MREF=%d)\n", time()-t0, mref); flush(stdout)
+    t0 = time(); ref2 = series(thetafx/(mref÷2), pf(mref÷2), k*(mref÷2), mref÷2)
+    @printf("self-check done in %7.1f s  (MREF=%d)\n\n", time()-t0, mref÷2); flush(stdout)
+
+    obs = (:mz, :z_mid, :zz_center, :zz_nn, :zz_half, :zz_end)
+    hdr = ["n","k","theta","p","mref","step","Jt","gamma_t"]
+    for o in obs; append!(hdr, ["$(o)_trot","$(o)_ref","err_$(o)","ref_err_$(o)"]); end
+    append!(hdr, ["chi_trot","chi_ref","S_op_trot","S_op_ref",
+                  "trace_trot","trace_ref","sat_trot","sat_ref"])
+    rows = [join(hdr, ",")]
+
+    @printf("%5s %8s %9s | %9s %9s %9s %9s | %9s %9s %9s %9s\n",
+            "step","J*t","gamma*t","mz trot","mz ref","err","ref err",
+            "zzc trot","zzc ref","err","ref err")
+    println("-"^108)
+    worst = Dict(o => 0.0 for o in obs); worstref = Dict(o => 0.0 for o in obs)
+    for s in 0:k
+        a, b, c = trot[s+1], ref[s+1], ref2[s+1]
+        vals = Any[n, k, @sprintf("%.6f",thetafx), @sprintf("%.6f",pfix), mref, s,
+                   @sprintf("%.6f", s*thetafx/2), @sprintf("%.6f", -s*log(1-pfix))]
+        for o in obs
+            e, re = abs(getfield(a,o) - getfield(b,o)), abs(getfield(b,o) - getfield(c,o))
+            worst[o] = max(worst[o], e); worstref[o] = max(worstref[o], re)
+            append!(vals, [@sprintf("%.8f",getfield(a,o)), @sprintf("%.8f",getfield(b,o)),
+                           @sprintf("%.3e",e), @sprintf("%.3e",re)])
+        end
+        append!(vals, [a.chi, b.chi, @sprintf("%.6f",a.S_op), @sprintf("%.6f",b.S_op),
+                       @sprintf("%.10f",a.trace), @sprintf("%.10f",b.trace),
+                       a.saturated, b.saturated])
+        push!(rows, join(vals, ","))
+        @printf("%5d %8.4f %9.4f | %9.5f %9.5f %9.2e %9.2e | %9.5f %9.5f %9.2e %9.2e\n",
+                s, s*thetafx/2, -s*log(1-pfix), a.mz, b.mz,
+                abs(a.mz-b.mz), abs(b.mz-c.mz),
+                a.zz_center, b.zz_center, abs(a.zz_center-b.zz_center),
+                abs(b.zz_center-c.zz_center))
+    end
+    f = joinpath(outdir, "evolve_n$(n)_k$(k)$(sfx).csv")
+    write(f, join(rows,"\n")*"\n"); @printf("\nwrote %s\n", f)
+
+    println("\nworst over the series   |trotter - reference|   vs   reference's own error")
+    for o in obs
+        ratio = worstref[o] > 0 ? worst[o]/worstref[o] : Inf
+        @printf("  %-10s  %.3e        %.3e      ratio %8.1f  %s\n", o,
+                worst[o], worstref[o], ratio,
+                ratio < 10 ? "<-- RAISE MREF, the reference is not resolved enough" : "ok")
+    end
+    if any(r.saturated for r in trot) || any(r.saturated for r in ref)
+        println("\nWARNING: maxdim bound. These are NOT reference-quality numbers;")
+        println("         raise MAXDIM_MPDO or lower n and rerun.")
+    end
+    println("\nThe ref_err_* columns are the reference's own discretisation error.")
+    println("Quote err_* only where it is at least ~10x larger than ref_err_*.")
+end
+
+# =============================================================================
 function run_depth()
     # WHERE THE HARDNESS ACTUALLY LIVES.
     #
@@ -573,6 +721,7 @@ end
 
 # =============================================================================
 if     mode == "theta";    run_theta()
+elseif mode == "evolve";   run_evolve()
 elseif mode == "depth";    run_depth()
 elseif mode == "mpdoladder"; run_mpdoladder()
 elseif mode == "fidelity"; run_fidelity()
@@ -581,6 +730,6 @@ elseif mode == "scaling";  run_scaling()
 elseif mode == "headtohead"; run_headtohead()
 elseif mode == "map";      run_map()
 elseif mode == "ksweep";   run_ksweep()
-else error("MODE must be one of: theta, depth, fidelity, damping, scaling, mpdoladder, headtohead, map, ksweep. Got '$mode'.")
+else error("MODE must be one of: theta, evolve, depth, fidelity, damping, scaling, mpdoladder, headtohead, map, ksweep. Got '$mode'.")
 end
 println("\n[stage] done"); flush(stdout)
