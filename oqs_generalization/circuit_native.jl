@@ -335,6 +335,153 @@ function circuit_observables(n::Int, theta::Float64, p::Float64, k::Int;
             zz_half=ev([1, max(2, n÷2)]), zz_end=ev([1, n]), lsites=ls)
 end
 
+"""
+    initial_state_card(n, spec; seed) -> Vector{NamedTuple}
+
+The state-preparation layer, written out so the hardware run can reproduce
+EXACTLY the product state the tensor-network run started from.
+
+`:random` draws a Haar-random point on the Bloch sphere per site from
+MersenneTwister(seed) -- reproducible inside Julia, and completely opaque to
+Qiskit. This turns it into gate angles.
+
+Any single-qubit pure state is, up to a global phase that no observable sees,
+
+    |psi> = cos(theta/2) |0> + e^{i phi} sin(theta/2) |1>
+
+which is Qiskit's U(theta, phi, 0) acting on |0> -- the third Euler angle is
+free because lambda only ever multiplies the |0> component by a phase before
+anything else happens. Equivalently RZ(phi) RY(theta) |0>, same state, same
+global-phase caveat. So the preparation layer is ONE arbitrary single-qubit
+rotation per qubit, depth 1, and on hardware it costs nothing in two-qubit
+depth.
+
+    qc.u(theta[q], phi[q], 0.0, q)          # or
+    qc.ry(theta[q], q); qc.rz(phi[q], q)
+
+INDEXING. Julia sites run 1..n; the `qubit` column is the Qiskit 0-indexed
+label, i.e. site j -> qubit j-1, with the chain order preserved so that the
+brickwall bonds (j, j+1) become (q, q+1).
+
+NESTING. The draws are sequential from one seeded stream, so the n=8 state is
+the first 8 sites of the n=12 state. Runs at different n therefore share their
+preparation layer site by site, which is what makes the n-scaling comparable.
+
+The `bx, by, bz` columns are the Bloch vector <X>, <Y>, <Z> of each qubit. They
+are independent of every phase and gate convention, so they are the thing to
+check against hardware: prepare the layer, measure the three Paulis per qubit
+before any entangling gate, and compare. If those match, the preparation is
+right whatever Qiskit's Euler convention happens to be in your version.
+"""
+function initial_state_card(n::Int, spec; seed::Int=20260916)
+    kets = initial_kets(n, spec; seed=seed)
+    rows = NamedTuple[]
+    for (j, v) in enumerate(kets)
+        a, b = v[1], v[2]
+        g  = exp(-im * angle(a))        # strip the global phase: a -> real >= 0
+        a2, b2 = a*g, b*g
+        push!(rows, (site = j, qubit = j - 1,
+                     a_re = real(a2), a_im = imag(a2),
+                     b_re = real(b2), b_im = imag(b2),
+                     u3_theta = 2*atan(abs(b2), abs(a2)),
+                     u3_phi   = angle(b2),
+                     bx = 2*real(conj(a)*b), by = 2*imag(conj(a)*b),
+                     bz = abs2(a) - abs2(b)))
+    end
+    return rows
+end
+
+"""
+    write_initial_state_card(path, n, spec; seed) -> Vector{NamedTuple}
+
+Writes `initial_state_card` to a CSV and echoes a paste-ready Qiskit snippet.
+Called before any evolution so that even a job that later times out still
+leaves behind the state-preparation layer it was going to use.
+"""
+function write_initial_state_card(path::AbstractString, n::Int, spec;
+                                  seed::Int=20260916, verbose::Bool=true)
+    rows = initial_state_card(n, spec; seed=seed)
+    open(path, "w") do io
+        println(io, "site,qubit,a_re,a_im,b_re,b_im,u3_theta,u3_phi,u3_lambda,bx,by,bz")
+        for r in rows
+            println(io, join([r.site, r.qubit,
+                @sprintf("%.17g",r.a_re), @sprintf("%.17g",r.a_im),
+                @sprintf("%.17g",r.b_re), @sprintf("%.17g",r.b_im),
+                @sprintf("%.17g",r.u3_theta), @sprintf("%.17g",r.u3_phi), 0.0,
+                @sprintf("%.17g",r.bx), @sprintf("%.17g",r.by),
+                @sprintf("%.17g",r.bz)], ","))
+        end
+    end
+    if verbose
+        @printf("\nstate preparation (%s, seed %d) -> %s\n", spec, seed, path)
+        println("  qubit |   u3_theta      u3_phi |      <X>       <Y>       <Z>")
+        for r in rows
+            @printf("  %5d | %10.6f %11.6f | %9.5f %9.5f %9.5f\n",
+                    r.qubit, r.u3_theta, r.u3_phi, r.bx, r.by, r.bz)
+        end
+        # Built with an explicit loop rather than a comprehension around
+        # @sprintf: a macro call inside a comprehension inside join() parses
+        # fine, but this version cannot be misread by anyone (or by a future
+        # Julia parser change), and this file has already cost one afternoon to
+        # a soft-scope surprise.
+        parts = String[]
+        for r in rows
+            push!(parts, @sprintf("(%.12f, %.12f)", r.u3_theta, r.u3_phi))
+        end
+        println("\n  # paste into Qiskit (the CSV carries 17 significant digits):")
+        println("  prep = [" * join(parts, ", ") * "]")
+        println("  for q, (th, ph) in enumerate(prep): qc.u(th, ph, 0.0, q)")
+    end
+    return rows
+end
+
+"""
+    mpdo_observables(rho, ls) -> NamedTuple
+
+Every Z-basis observable the hardware comparison needs, read off ONE vectorised
+density matrix. Separated from `circuit_observables` (which runs a circuit and
+only then measures) so a time series can snapshot the state after every Trotter
+step instead of re-running the circuit once per time point -- the difference
+between O(k) and O(k^2) work.
+
+Everything is normalised by Tr(rho), so truncation cannot inflate it:
+
+    mz          (1/n) sum_j <Z_j>         mean magnetisation
+    z_mid       <Z_{n/2}>                 one central qubit
+    zz_center   <Z_{n/2} Z_{n/2+1}>       the CENTRAL BOND -- the "two-qubit
+                                          correlator in the middle of the chain".
+                                          NOTE this is NOT the zz_half reported
+                                          by circuit_observables and by the
+                                          earlier ksweep CSVs, which is
+                                          <Z_1 Z_{n/2}>: site 1 to the middle, a
+                                          different operator with a different
+                                          Trotter convergence rate. Both are
+                                          returned so the two can never be
+                                          confused again.
+    zz_nn       mean_j <Z_j Z_{j+1}>      averaged nearest neighbour
+    zz_half     <Z_1 Z_{n/2}>             kept for continuity with the ksweep
+    zz_end      <Z_1 Z_n>                 longest-range pair
+    trace       Tr(rho) before normalising -- a truncation diagnostic. It should
+                sit at 1 to ~1e-10; drift means maxdim is binding and the run is
+                no longer a reference.
+"""
+function mpdo_observables(rho::MPS, ls::LiouvilleSites)
+    n = ls.n
+    tr = inner(identity_vectorized_mps(ls), rho)
+    zop(js) = local_op_vectorized_mps(ls,
+                  Dict{Int,Matrix{ComplexF64}}(j => SIGMA_Z for j in js))
+    ev(js) = real(inner(zop(js), rho) / tr)
+    z  = [ev([j]) for j in 1:n]
+    nn = [ev([j, j+1]) for j in 1:n-1]
+    c  = max(1, n ÷ 2)
+    return (mz = sum(z)/n, z_mid = z[c],
+            zz_center = n > 1 ? ev([c, c+1]) : NaN,
+            zz_nn = sum(nn)/length(nn),
+            zz_half = ev([1, max(2, n ÷ 2)]),
+            zz_end = ev([1, n]),
+            z = z, zz_nn_all = nn, trace = real(tr))
+end
+
 # =============================================================================
 # STEP 2 helpers: hardness and faithfulness as functions of the gate angle
 # =============================================================================
