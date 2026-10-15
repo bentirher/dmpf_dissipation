@@ -36,6 +36,15 @@
 #   4^10 ~ 1.0e6, and 2^(n/2) only reaches 1.0e6 at n = 40. That makes n = 40
 #   the point where more qubits stop buying classical cost at k = 10.
 #
+#   NEXT UP:
+#     50,51,52  MODE=evolve -- the hardware baseline. Observable time series
+#               (mean magnetisation and the CENTRAL two-qubit correlator) for
+#               the k=10 circuit AND for a 200-substep quasi-exact reference at
+#               matched physical times, step by step. This is what the device
+#               data gets plotted against, and the gap between the two curves is
+#               the Trotter error the hardware will also show.
+#                   sbatch --array=50 submit_circuit_study.sh    # minutes, exact
+#
 #   OUTSTANDING, in priority order:
 #     40,41,42  MODE=depth -- chi(n, k) at the chosen (theta, p). THE measurement
 #               the maps could not give. Run 40 first; it is ~2 h.
@@ -158,6 +167,37 @@ case $SLURM_ARRAY_TASK_ID in
       export THETAS=0.35,0.65,0.95,1.25,1.5708,2.10,2.40
       export PLIST=0.0,0.02,0.05,0.12,0.20
       export OUTDIR=ckt_map_n20 TAG=m20 ;;
+
+  # --- THE HARDWARE BASELINE (50-52) ----------------------------------------
+  #
+  # Observable time series for the Option-B protocol -- fixed Trotter step,
+  # time advanced by repeating the layer, so step s IS the time point. Produces
+  # the circuit curve and a quasi-exact reference curve at MATCHED physical
+  # times, which is what the device data gets plotted against.
+  #
+  # MAXDIM_MPDO is chosen to be the EXACT vectorised ceiling 4^(n/2), so these
+  # runs are not truncated at all and the only error in them is the Trotter
+  # step itself:   n=8 -> 4^4 = 256,  n=10 -> 4^5 = 1024,  n=12 -> 4^6 = 4096.
+  # Watch the trace_* columns: they must stay at 1 to ~1e-10.
+  #
+  # Run 50 FIRST as a smoke test -- it is minutes, and it is the one run in the
+  # whole study with truncation identically zero, so if the circuit and the
+  # reference disagree there it is real Trotter error and nothing else.
+  #
+  # BLAS gets the cores here: MPDO is one large SVD per gate, not many small
+  # independent trajectories.
+  50) export MODE=evolve N=8  K=10 THETA=0.95 P=0.05 MREF=20 EXCITED=random
+      export MAXDIM_MPDO=256  CUTOFF=1e-14 BLAS_THREADS=16
+      export OUTDIR=ckt_evolve_n8  TAG=e8 ;;
+  51) export MODE=evolve N=10 K=10 THETA=0.95 P=0.05 MREF=20 EXCITED=random
+      export MAXDIM_MPDO=1024 CUTOFF=1e-14 BLAS_THREADS=16
+      export OUTDIR=ckt_evolve_n10 TAG=e10 ;;
+  # n=12 at the exact ceiling 4096 is the expensive one (200 reference steps
+  # with 4096 x 4096 SVDs). Give it the full wall and check `sat_ref` before
+  # quoting anything from it.
+  52) export MODE=evolve N=12 K=10 THETA=0.95 P=0.05 MREF=20 EXCITED=random
+      export MAXDIM_MPDO=4096 CUTOFF=1e-14 BLAS_THREADS=16
+      export OUTDIR=ckt_evolve_n12 TAG=e12 ;;
 
   # --- DEPTH: chi(n, k) AT THE CHOSEN POINT (40-42) -------------------------
   #
