@@ -37,6 +37,13 @@
 #   the point where more qubits stop buying classical cost at k = 10.
 #
 #   NEXT UP:
+#     44,45,53,54  THE ACCURACY-vs-HARDNESS CANDIDATES. chi is FLAT in theta at
+#               fixed (J*t, gamma*t), so the coarse step was never what made the
+#               circuit hard -- theta=0.95 was buying Trotter error for nothing.
+#               Candidate B (theta=0.30, k=15) beats the old choice on BOTH
+#               axes. Run these four before fixing a hardware protocol.
+#                   sbatch --array=44,45,53,54 submit_circuit_study.sh
+#
 #     50,51,52  MODE=evolve -- the hardware baseline. Observable time series
 #               (mean magnetisation and the CENTRAL two-qubit correlator) for
 #               the k=10 circuit AND for a 200-substep quasi-exact reference at
@@ -241,6 +248,52 @@ case $SLURM_ARRAY_TASK_ID in
       export NTRAJ=8 MAXDIM_TRAJ=8192 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
       export KLIST=8,10,12,14
       export OUTDIR=ckt_depth_big TAG=d3 ;;
+
+  # --- 44-45 / 53-54: THE ACCURACY-vs-HARDNESS CANDIDATES --------------------
+  #
+  # WHY THESE EXIST. Holding the PHYSICS fixed (J*t = 4.75, gamma*t = 0.513) and
+  # varying only the Trotter step gives chi(n=16) = 160, 180, 173, 198, 185 at
+  # theta = 0.20, 0.30, 0.475, 0.65, 0.95 -- FLAT. Hardness is set by (J*t,
+  # gamma*t), not by how coarsely you discretise. The coarse step was never what
+  # made the circuit hard, so theta = 0.95 was buying Trotter error for nothing.
+  #
+  # At fixed depth k, theta only sets how much physical time you reach,
+  # J*t = k*theta/2, and the entanglement barrier is broad and flat past
+  # J*t ~ 2.4. So shortening the run costs almost no hardness and buys a lot of
+  # accuracy. Measured at n=8 (error) and n=16 (chi):
+  #
+  #     k   theta  depth   J*t  gamma*t | err_z   chi(n=16)
+  #    10   0.950    300  4.75    0.513 | 0.128       185     <- the old choice
+  #    10   0.475    300  2.38    0.257 | 0.066       174     <- candidate A
+  #    15   0.300    450  2.25    0.243 | 0.029       204     <- candidate B
+  #    20   0.300    600  3.00    0.324 | 0.039       181
+  #
+  # Candidate B DOMINATES the old choice on both axes: more chi AND 4.4x less
+  # Trotter error, for 1.5x the two-qubit depth. Candidate A is free -- same
+  # depth, same hardness, half the error.
+  #
+  # Hardness peaks on a ridge at gamma*t ~ 0.3-0.55 (the entanglement barrier of
+  # the master equation). Past it the damping wins: k=32, theta=0.95 gives
+  # gamma*t = 1.64 and chi collapses to 102.
+  #
+  # 44/45 measure chi(n) at the two candidates; 53/54 measure their Trotter
+  # error. Run all four before committing to a hardware protocol. The numbers
+  # above are 6 trajectories at n=16, so +-10% -- enough to see that chi is flat
+  # in theta, not enough to rank 204 against 185.
+  44) export MODE=depth NLIST=8,12,16,20,22 K=10 THETA=0.475 P=0.0253 EXCITED=random
+      export NTRAJ=16 MAXDIM_TRAJ=4096 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
+      export KLIST=10
+      export OUTDIR=ckt_candA TAG=cA ;;
+  45) export MODE=depth NLIST=8,12,16,20,22 K=15 THETA=0.300 P=0.0161 EXCITED=random
+      export NTRAJ=16 MAXDIM_TRAJ=4096 SKIP_MPDO=true CUTOFF_TRAJ=1e-8
+      export KLIST=15
+      export OUTDIR=ckt_candB TAG=cB ;;
+  53) export MODE=evolve N=10 K=10 THETA=0.475 P=0.0253 MREF=20 EXCITED=random
+      export MAXDIM_MPDO=1024 CUTOFF=1e-14 BLAS_THREADS=16
+      export OUTDIR=ckt_evolve_candA TAG=cA ;;
+  54) export MODE=evolve N=10 K=15 THETA=0.300 P=0.0161 MREF=20 EXCITED=random
+      export MAXDIM_MPDO=1024 CUTOFF=1e-14 BLAS_THREADS=16
+      export OUTDIR=ckt_evolve_candB TAG=cB ;;
 
   # --- 43: one more n for the beta fit, plateau theta only -------------------
   # Drops theta = 0.35 and pi/2 (both settled) and p = 0, which is pinned at the
