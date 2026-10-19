@@ -502,6 +502,153 @@ function run_ksweep()
 end
 
 # =============================================================================
+function run_frontier()
+    # THE ACCURACY-vs-HARDNESS FRONTIER. One job, one CSV, both axes.
+    #
+    # Every point is a circuit on the PHYSICAL RAY gamma/J = GJ, so p is not a
+    # free knob here:
+    #     J*t     = k*theta/2
+    #     gamma*t = (gamma/J) * J*t
+    #     p       = 1 - exp(-gamma*t/k)
+    # and the grid is over (k, theta). For each cell this measures BOTH
+    #
+    #   HARDNESS    chi from trajectories at every n in NLIST
+    #   ACCURACY    max_j |<Z_j>_circuit - <Z_j>_reference| and the correlator
+    #               errors, from an MPDO at N_ERR against a fine reference at
+    #               the SAME (J*t, gamma*t)
+    #
+    # so the two can be plotted against each other. That is the plot that picks
+    # the hardware protocol, and until now it existed only as an off-cluster
+    # calculation.
+    #
+    # WHAT IT IS FOR. Holding the physics fixed and varying only the step gives
+    # chi(n=16) = 160, 180, 173, 198, 185 at theta = 0.20, 0.30, 0.475, 0.65,
+    # 0.95 -- FLAT. Hardness is set by (J*t, gamma*t), not by how coarsely you
+    # discretise, so a coarse theta buys Trotter error for nothing. At fixed
+    # depth k, theta only sets how far in time you get, and the entanglement
+    # barrier is broad past J*t ~ 2.4, so shortening the run is nearly free in
+    # hardness and large in accuracy. This job measures that trade properly,
+    # with error bars, instead of taking it on trust.
+    #
+    # THE REFERENCE. Each cell's reference subdivides the SAME evolution into
+    # mref substeps per circuit step, chosen so the total is about REF_STEPS:
+    #     theta_fine = theta/mref,  p_fine = 1-(1-p)^(1/mref)
+    # which keeps J*t and gamma*t exactly. A second reference at mref/2 gives
+    # ref_err_*, the reference's own discretisation error. Any err_* that is not
+    # at least ~10x its ref_err_* is not resolved and must not be quoted --
+    # raise REF_STEPS and rerun that cell.
+    #
+    # COST. Per cell: k + k*mref + k*(mref/2) MPDO steps at N_ERR, plus NTRAJ
+    # trajectories at each n in NLIST. With the defaults (4 k x 4 theta, N_ERR=8,
+    # REF_STEPS=240, NLIST=8,12,16) that is ~6000 MPDO steps at n=8 and 16 waves
+    # of trajectories -- a few hours. N_ERR=8 is deliberate: the vectorised
+    # ceiling there is 4^4 = 256, so MAXDIM_MPDO=256 truncates NOTHING and the
+    # error is pure Trotter error. Raising N_ERR costs a lot and buys little;
+    # the Trotter error is not strongly size-dependent.
+    #
+    # Environment: KLIST, THETAS, GJ, NLIST, N_ERR, REF_STEPS, NTRAJ,
+    #              MAXDIM_MPDO, MAXDIM_TRAJ, CUTOFF, CUTOFF_TRAJ, EXCITED
+    gJ        = parse(Float64, getenv("GJ", 0.107986))
+    ks        = parse.(Int, split(getenv("KLIST", "10,15,20,32"), ","))
+    n_err     = parse(Int, getenv("N_ERR", 8))
+    ref_steps = parse(Int, getenv("REF_STEPS", 240))
+    ceil_err  = 4.0^(n_err ÷ 2)
+    # The global THETAS default is the 17-point sweep used by MODE=theta, which
+    # would make this a 68-cell job. Use a frontier-sized default unless THETAS
+    # was set explicitly.
+    ths = haskey(ENV, "THETAS") ? thetas : [0.30, 0.475, 0.65, 0.95]
+
+    @printf("gamma/J = %.6f (fixed).  N_ERR = %d (vectorised ceiling 4^%d = %.0f)\n",
+            gJ, n_err, n_err÷2, ceil_err)
+    if maxdim_mpdo < ceil_err
+        @printf("WARNING: MAXDIM_MPDO=%d < %.0f, so the error runs ARE truncated\n",
+                maxdim_mpdo, ceil_err)
+    end
+    @printf("chi from trajectories at n = %s, NTRAJ=%d\n", join(nlist,","), ntraj)
+    @printf("grid: %d k x %d theta = %d cells\n\n", length(ks), length(ths),
+            length(ks)*length(ths))
+    flush(stdout)
+
+    hdr = ["k","theta","p","Jt","gamma_t","depth2q","mref","theta_ref",
+           "err_z_max","err_mz","err_zz_center","err_zz_nn","err_zz_end",
+           "ref_err_z_max","ref_err_zz_center","ref_err_zz_nn",
+           "trace_coarse","trace_ref","wall_err_s"]
+    for nn in nlist
+        append!(hdr, ["chi_n$(nn)","chi_sem_n$(nn)","S_n$(nn)",
+                      "censored_n$(nn)","wall_n$(nn)_s"])
+    end
+    rows = [join(hdr, ",")]
+
+    chdr = String[]
+    for nn in nlist; push!(chdr, @sprintf("%8s", "chi n=$(nn)")); end
+    @printf("%4s %7s %8s %7s %8s %6s %6s | %9s %9s %9s | %s\n",
+            "k","theta","p","J*t","gamma*t","depth","mref",
+            "err_z","err_zzc","ref_err_z", join(chdr, " "))
+    println("-"^(78 + 9*length(nlist)))
+
+    for kk in ks
+        for th in ths
+            Jt = kk*th/2; gt = gJ*Jt; p = 1 - exp(-gt/kk)
+            mref = max(4, round(Int, ref_steps/kk)); isodd(mref) && (mref += 1)
+            m2   = mref ÷ 2
+            ls = liouville_siteinds(n_err)
+            t0 = time()
+            rc, _ = mpdo_run(n_err, th, p, kk; cutoff=cutoff, maxdim=maxdim_mpdo,
+                             excited=excited, lsites=ls)
+            oc = mpdo_observables(rc, ls)
+            rr, _ = mpdo_run(n_err, th/mref, 1-(1-p)^(1/mref), kk*mref;
+                             cutoff=cutoff, maxdim=maxdim_mpdo, excited=excited, lsites=ls)
+            orf = mpdo_observables(rr, ls)
+            r2, _ = mpdo_run(n_err, th/m2, 1-(1-p)^(1/m2), kk*m2;
+                             cutoff=cutoff, maxdim=maxdim_mpdo, excited=excited, lsites=ls)
+            o2 = mpdo_observables(r2, ls)
+            wall_err = time() - t0
+
+            ez   = maximum(abs.(oc.z .- orf.z))
+            rez  = maximum(abs.(orf.z .- o2.z))
+            vals = Any[kk, @sprintf("%.6f",th), @sprintf("%.6f",p),
+                       @sprintf("%.6f",Jt), @sprintf("%.6f",gt), 30*kk, mref,
+                       @sprintf("%.6f",th/mref),
+                       @sprintf("%.6e",ez),
+                       @sprintf("%.6e",abs(oc.mz-orf.mz)),
+                       @sprintf("%.6e",abs(oc.zz_center-orf.zz_center)),
+                       @sprintf("%.6e",abs(oc.zz_nn-orf.zz_nn)),
+                       @sprintf("%.6e",abs(oc.zz_end-orf.zz_end)),
+                       @sprintf("%.6e",rez),
+                       @sprintf("%.6e",abs(orf.zz_center-o2.zz_center)),
+                       @sprintf("%.6e",abs(orf.zz_nn-o2.zz_nn)),
+                       @sprintf("%.10f",oc.trace), @sprintf("%.10f",orf.trace),
+                       @sprintf("%.1f",wall_err)]
+            chis = Float64[]
+            for nn in nlist
+                t1 = time()
+                e = circuit_trajectory_ensemble(nn, th, p, kk, ntraj;
+                        cutoff=cutoff_traj, maxdim=maxdim_traj,
+                        excited=excited, verbose=false)
+                f = e.series[end]
+                push!(chis, f.chi_mean)
+                append!(vals, [@sprintf("%.4f",f.chi_mean), @sprintf("%.4f",f.chi_sem),
+                               @sprintf("%.6f",f.S_mean), f.censored,
+                               @sprintf("%.1f",time()-t1)])
+            end
+            push!(rows, join(vals, ","))
+            cstr = String[]
+            for c in chis; push!(cstr, @sprintf("%8.1f", c)); end
+            @printf("%4d %7.3f %8.4f %7.3f %8.4f %6d %6d | %9.4f %9.4f %9.4f | %s\n",
+                    kk, th, p, Jt, gt, 30*kk, mref, ez,
+                    abs(oc.zz_center-orf.zz_center), rez, join(cstr, " "))
+            flush(stdout)
+            write(joinpath(outdir, "frontier$(sfx).csv"), join(rows,"\n")*"\n")
+        end
+    end
+    @printf("\nwrote %s  (%d cells)\n", joinpath(outdir,"frontier$(sfx).csv"),
+            length(rows)-1)
+    println("\nPlot chi_n16 (y, up is harder) against err_z_max (x, left is more")
+    println("accurate). Up and to the LEFT wins. Check every err_* against its")
+    println("ref_err_* first: a ratio below ~10 means that cell is unresolved.")
+end
+
+# =============================================================================
 function run_evolve()
     # THE HARDWARE BASELINE.
     #
@@ -582,10 +729,15 @@ function run_evolve()
             !isempty(damp) && (rho = apply(damp, rho; cutoff=cutoff, maxdim=md))
             (s % every == 0) || continue
             r = bond_report(rho, [1e-6])
+            # The cap that can ACTUALLY bite is min(maxdim, the exact
+            # vectorised half-cut rank 4^(n/2)). At n=8 that rank is 4^4 = 256,
+            # so MAXDIM_MPDO=256 cannot truncate anything and a linkdim of 256
+            # means FULL RANK, not saturation. Comparing against maxdim alone
+            # raised a false alarm on every step of the first n=8 run.
             push!(out, merge(mpdo_observables(rho, ls),
                              (step = s ÷ every, chi = r.chi_req_max[1],
                               linkdim = r.linkdim_max, S_op = r.S_op_max,
-                              saturated = r.linkdim_max >= md)))
+                              saturated = r.linkdim_max >= min(md, 4.0^(n ÷ 2)))))
             flush(stdout)
         end
         return out
@@ -594,10 +746,47 @@ function run_evolve()
     t0 = time(); trot = series(thetafx, pfix, k, 1)
     @printf("trotter   done in %7.1f s\n", time()-t0); flush(stdout)
     pf(m)  = 1 - (1-pfix)^(1/m)
-    t0 = time(); ref  = series(thetafx/mref,   pf(mref),   k*mref,   mref)
-    @printf("reference done in %7.1f s  (MREF=%d)\n", time()-t0, mref); flush(stdout)
+
+    # REF_EVERY: how often the reference is RECORDED, in substeps. The reference
+    # always takes k*MREF substeps; the default MREF records it only at the k
+    # circuit step times, which is all the comparison table needs. Set
+    # REF_EVERY=1 and the same run is written out at every substep instead,
+    # giving the smooth continuous-time curve the circuit is a coarse sampling
+    # of -- the thing you actually want behind a time-series plot. Measuring
+    # costs ~2n inner products per recorded point, so REF_EVERY=1 roughly
+    # doubles the reference cost; cheap at n<=10, noticeable at n=12.
+    dense = parse(Int, getenv("REF_EVERY", mref))
+    @assert dense >= 1 && mref % dense == 0 "REF_EVERY must divide MREF"
+    t0 = time(); ref_all = series(thetafx/mref, pf(mref), k*mref, dense)
+    @printf("reference done in %7.1f s  (MREF=%d, recorded every %d substep%s)\n",
+            time()-t0, mref, dense, dense == 1 ? "" : "s"); flush(stdout)
+    # Rows at the matched circuit times: substep j*mref sits at index j*stride+1.
+    stride = mref ÷ dense
+    ref = ref_all[1:stride:end]
+    @assert length(ref) == k+1 "reference row count $(length(ref)) != $(k+1)"
     t0 = time(); ref2 = series(thetafx/(mref÷2), pf(mref÷2), k*(mref÷2), mref÷2)
     @printf("self-check done in %7.1f s  (MREF=%d)\n\n", time()-t0, mref÷2); flush(stdout)
+
+    if dense < mref
+        f = joinpath(outdir, "evolve_dense_ref_n$(n)_k$(k)$(sfx).csv")
+        dr = ["substep,Jt,gamma_t,mz,z_mid,zz_center,zz_nn,zz_half,zz_end,chi,S_op,trace"]
+        for (i, r) in enumerate(ref_all)
+            sub = (i-1)*dense
+            # Built with an explicit loop, not a generator around @sprintf --
+            # same reasoning as write_initial_state_card: a macro inside a
+            # comprehension inside join() parses, but there is no reason to
+            # depend on that.
+            vals = Any[sub, @sprintf("%.6f", sub*(thetafx/mref)/2),
+                            @sprintf("%.6f", -sub*log(1-pf(mref)))]
+            for o in (:mz, :z_mid, :zz_center, :zz_nn, :zz_half, :zz_end)
+                push!(vals, @sprintf("%.8f", getfield(r, o)))
+            end
+            push!(vals, r.chi, @sprintf("%.6f", r.S_op), @sprintf("%.10f", r.trace))
+            push!(dr, join(vals, ","))
+        end
+        write(f, join(dr,"\n")*"\n")
+        @printf("wrote %s  (%d points -- the smooth reference curve)\n\n", f, length(ref_all))
+    end
 
     obs = (:mz, :z_mid, :zz_center, :zz_nn, :zz_half, :zz_end)
     hdr = ["n","k","theta","p","mref","step","Jt","gamma_t"]
@@ -634,12 +823,33 @@ function run_evolve()
     f = joinpath(outdir, "evolve_n$(n)_k$(k)$(sfx).csv")
     write(f, join(rows,"\n")*"\n"); @printf("\nwrote %s\n", f)
 
+    # ENVELOPES, not per-step ratios. The Trotter error oscillates and passes
+    # through zero at accidental steps; at those steps the per-step ratio dips
+    # below 1 even when the reference is perfectly well resolved. The maximum
+    # over the series is the quantity that has to clear the reference.
+    #
+    # FLOOR. An observable whose error is already at the numerical floor has no
+    # Trotter error to resolve and must not be flagged. mz is the case here: the
+    # damping channel is applied exactly and sets the total magnetisation on its
+    # own, so err_mz ~ 1e-7 and ref_err_mz ~ 5e-8 -- a ratio of 2 that means
+    # "both are zero", not "the reference is too coarse".
+    FLOOR = 1e-6
     println("\nworst over the series   |trotter - reference|   vs   reference's own error")
     for o in obs
         ratio = worstref[o] > 0 ? worst[o]/worstref[o] : Inf
+        verdict = worst[o] < FLOOR ?
+            "at the numerical floor -- no Trotter error to resolve" :
+            (ratio < 10 ? "<-- RAISE MREF, the reference is not resolved enough" : "ok")
         @printf("  %-10s  %.3e        %.3e      ratio %8.1f  %s\n", o,
-                worst[o], worstref[o], ratio,
-                ratio < 10 ? "<-- RAISE MREF, the reference is not resolved enough" : "ok")
+                worst[o], worstref[o], ratio, verdict)
+    end
+    println("\nfinal step: value, absolute and RELATIVE error (the number to quote)")
+    a, b = trot[k+1], ref[k+1]
+    for o in obs
+        v, r = getfield(a,o), getfield(b,o)
+        rel = abs(r) > 1e-9 ? abs(v-r)/abs(r)*100 : NaN
+        @printf("  %-10s  trot %+9.5f   ref %+9.5f   abs %.3e   rel %6.1f %%\n",
+                o, v, r, abs(v-r), rel)
     end
     if any(r.saturated for r in trot) || any(r.saturated for r in ref)
         println("\nWARNING: maxdim bound. These are NOT reference-quality numbers;")
@@ -721,6 +931,7 @@ end
 
 # =============================================================================
 if     mode == "theta";    run_theta()
+elseif mode == "frontier"; run_frontier()
 elseif mode == "evolve";   run_evolve()
 elseif mode == "depth";    run_depth()
 elseif mode == "mpdoladder"; run_mpdoladder()
@@ -730,6 +941,6 @@ elseif mode == "scaling";  run_scaling()
 elseif mode == "headtohead"; run_headtohead()
 elseif mode == "map";      run_map()
 elseif mode == "ksweep";   run_ksweep()
-else error("MODE must be one of: theta, evolve, depth, fidelity, damping, scaling, mpdoladder, headtohead, map, ksweep. Got '$mode'.")
+else error("MODE must be one of: theta, frontier, evolve, depth, fidelity, damping, scaling, mpdoladder, headtohead, map, ksweep. Got '$mode'.")
 end
 println("\n[stage] done"); flush(stdout)

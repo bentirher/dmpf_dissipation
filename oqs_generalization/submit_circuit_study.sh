@@ -37,6 +37,10 @@
 #   the point where more qubits stop buying classical cost at k = 10.
 #
 #   NEXT UP:
+#     46,47     MODE=frontier -- the accuracy-vs-hardness plot, BOTH axes in one
+#               CSV. Run 47 first (4 cells, ~20 min, reproduces the k=10 row you
+#               can cross-check against the maps), then 46 for the full grid.
+#                   sbatch --array=47 submit_circuit_study.sh
 #     44,45,53,54  THE ACCURACY-vs-HARDNESS CANDIDATES. chi is FLAT in theta at
 #               fixed (J*t, gamma*t), so the coarse step was never what made the
 #               circuit hard -- theta=0.95 was buying Trotter error for nothing.
@@ -195,6 +199,10 @@ case $SLURM_ARRAY_TASK_ID in
   # independent trajectories.
   50) export MODE=evolve N=8  K=10 THETA=0.95 P=0.05 MREF=20 EXCITED=random
       export MAXDIM_MPDO=256  CUTOFF=1e-14 BLAS_THREADS=16
+      # REF_EVERY=1 also writes evolve_dense_ref_* : the reference recorded at
+      # EVERY substep, i.e. the smooth continuous-time curve the circuit is a
+      # coarse sampling of. Roughly doubles the reference cost; trivial at n=8.
+      export REF_EVERY=1
       export OUTDIR=ckt_evolve_n8  TAG=e8 ;;
   51) export MODE=evolve N=10 K=10 THETA=0.95 P=0.05 MREF=20 EXCITED=random
       export MAXDIM_MPDO=1024 CUTOFF=1e-14 BLAS_THREADS=16
@@ -249,6 +257,37 @@ case $SLURM_ARRAY_TASK_ID in
       export KLIST=8,10,12,14
       export OUTDIR=ckt_depth_big TAG=d3 ;;
 
+  # --- 46-47: THE ACCURACY-vs-HARDNESS FRONTIER ------------------------------
+  #
+  # One job, one CSV, both axes -- the plot that picks the hardware protocol.
+  # Every cell sits on the physical ray gamma/J = 0.108, so p is determined:
+  #     J*t = k*theta/2,  gamma*t = 0.108*J*t,  p = 1-exp(-gamma*t/k)
+  # and for each (k, theta) it measures chi (trajectories, every n in NLIST)
+  # AND the Trotter error (MPDO at N_ERR against a fine reference at the same
+  # J*t), plus a second reference at mref/2 so the error has its own error bar.
+  #
+  # Plot chi_n16 against err_z_max: up and to the LEFT wins. Check every err_*
+  # against its ref_err_* first -- a ratio below ~10 means raise REF_STEPS.
+  #
+  # N_ERR=8 with MAXDIM_MPDO=256 is the exact vectorised ceiling 4^4, so the
+  # error runs are untruncated and err_* is pure Trotter error.
+  #
+  # 46 is the production grid: 4 k x 4 theta = 16 cells, a few hours.
+  # 47 is a 4-cell smoke test at k=10 only -- run it first, it is ~20 min and
+  # it reproduces the k=10 row, which you can cross-check against the maps.
+  46) export MODE=frontier GJ=0.107986 NLIST=8,12,16 N_ERR=8 REF_STEPS=240
+      export KLIST=10,15,20,32
+      export THETAS=0.30,0.475,0.65,0.95
+      export NTRAJ=16 MAXDIM_TRAJ=4096 MAXDIM_MPDO=256
+      export CUTOFF=1e-14 CUTOFF_TRAJ=1e-8 EXCITED=random BLAS_THREADS=4
+      export OUTDIR=ckt_frontier TAG=fr ;;
+  47) export MODE=frontier GJ=0.107986 NLIST=8,12,16 N_ERR=8 REF_STEPS=240
+      export KLIST=10
+      export THETAS=0.30,0.475,0.65,0.95
+      export NTRAJ=16 MAXDIM_TRAJ=4096 MAXDIM_MPDO=256
+      export CUTOFF=1e-14 CUTOFF_TRAJ=1e-8 EXCITED=random BLAS_THREADS=4
+      export OUTDIR=ckt_frontier_smoke TAG=fr0 ;;
+
   # --- 44-45 / 53-54: THE ACCURACY-vs-HARDNESS CANDIDATES --------------------
   #
   # WHY THESE EXIST. Holding the PHYSICS fixed (J*t = 4.75, gamma*t = 0.513) and
@@ -289,10 +328,10 @@ case $SLURM_ARRAY_TASK_ID in
       export KLIST=15
       export OUTDIR=ckt_candB TAG=cB ;;
   53) export MODE=evolve N=10 K=10 THETA=0.475 P=0.0253 MREF=20 EXCITED=random
-      export MAXDIM_MPDO=1024 CUTOFF=1e-14 BLAS_THREADS=16
+      export MAXDIM_MPDO=1024 CUTOFF=1e-14 BLAS_THREADS=16 REF_EVERY=1
       export OUTDIR=ckt_evolve_candA TAG=cA ;;
   54) export MODE=evolve N=10 K=15 THETA=0.300 P=0.0161 MREF=20 EXCITED=random
-      export MAXDIM_MPDO=1024 CUTOFF=1e-14 BLAS_THREADS=16
+      export MAXDIM_MPDO=1024 CUTOFF=1e-14 BLAS_THREADS=16 REF_EVERY=1
       export OUTDIR=ckt_evolve_candB TAG=cB ;;
 
   # --- 43: one more n for the beta fit, plateau theta only -------------------
