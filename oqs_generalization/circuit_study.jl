@@ -127,6 +127,19 @@ open(joinpath(outdir,"manifest.csv"),"w") do io
                   ("plist",join(plist," ")),("theta",thetafx),("thetas",join(thetas," ")),
                   ("maxdim",maxdim),("cutoff",cutoff),("ntraj",ntraj),("kref",kref),
                   ("excited",excited),("Jref",JREF),("Gref",GREF),
+                  # The settings each MODE actually reads. The first frontier
+                  # run recorded only the globals, so the manifest said
+                  # theta=1.5708 and maxdim=1024 for a job that used neither --
+                  # a reproducibility hole. Everything below is read from ENV so
+                  # an unset key shows its default, which is what was used.
+                  ("maxdim_mpdo",maxdim_mpdo),("maxdim_traj",maxdim_traj),
+                  ("cutoff_traj",cutoff_traj),("skip_mpdo",skip_mpdo),
+                  ("klist",getenv("KLIST","(unset)")),("gj",getenv("GJ","(unset)")),
+                  ("n_err",getenv("N_ERR","(unset)")),
+                  ("ref_steps",getenv("REF_STEPS","(unset)")),
+                  ("err_seeds",getenv("ERR_SEEDS","(unset)")),
+                  ("mref",getenv("MREF","(unset)")),
+                  ("ref_every",getenv("REF_EVERY","(unset)")),
                   ("threads",Threads.nthreads()),("host",gethostname()),("started",Dates.now())]
         println(io,"$a,$b")
     end
@@ -552,6 +565,7 @@ function run_frontier()
     ks        = parse.(Int, split(getenv("KLIST", "10,15,20,32"), ","))
     n_err     = parse(Int, getenv("N_ERR", 8))
     ref_steps = parse(Int, getenv("REF_STEPS", 240))
+    err_seeds = parse(Int, getenv("ERR_SEEDS", 5))
     ceil_err  = 4.0^(n_err ÷ 2)
     # The global THETAS default is the 17-point sweep used by MODE=theta, which
     # would make this a 68-cell job. Use a frontier-sized default unless THETAS
@@ -565,12 +579,14 @@ function run_frontier()
                 maxdim_mpdo, ceil_err)
     end
     @printf("chi from trajectories at n = %s, NTRAJ=%d\n", join(nlist,","), ntraj)
+    @printf("Trotter error averaged over ERR_SEEDS=%d random initial states\n", err_seeds)
     @printf("grid: %d k x %d theta = %d cells\n\n", length(ks), length(ths),
             length(ks)*length(ths))
     flush(stdout)
 
-    hdr = ["k","theta","p","Jt","gamma_t","depth2q","mref","theta_ref",
-           "err_z_max","err_mz","err_zz_center","err_zz_nn","err_zz_end",
+    hdr = ["k","theta","p","Jt","gamma_t","depth2q","mref","theta_ref","err_seeds",
+           "err_z_max","err_z_max_sd","err_z_mean","err_z_mean_sd","err_mz",
+           "err_zz_center","err_zz_center_sd","err_zz_nn","err_zz_nn_sd","err_zz_end",
            "ref_err_z_max","ref_err_zz_center","ref_err_zz_nn",
            "trace_coarse","trace_ref","wall_err_s"]
     for nn in nlist
@@ -581,9 +597,9 @@ function run_frontier()
 
     chdr = String[]
     for nn in nlist; push!(chdr, @sprintf("%8s", "chi n=$(nn)")); end
-    @printf("%4s %7s %8s %7s %8s %6s %6s | %9s %9s %9s | %s\n",
+    @printf("%4s %7s %8s %7s %8s %6s %6s | %14s %7s %7s | %s\n",
             "k","theta","p","J*t","gamma*t","depth","mref",
-            "err_z","err_zzc","ref_err_z", join(chdr, " "))
+            "err_z +- sd","err_zzc","ref_err_z", join(chdr, " "))
     println("-"^(78 + 9*length(nlist)))
 
     for kk in ks
@@ -593,31 +609,58 @@ function run_frontier()
             m2   = mref ÷ 2
             ls = liouville_siteinds(n_err)
             t0 = time()
-            rc, _ = mpdo_run(n_err, th, p, kk; cutoff=cutoff, maxdim=maxdim_mpdo,
-                             excited=excited, lsites=ls)
-            oc = mpdo_observables(rc, ls)
-            rr, _ = mpdo_run(n_err, th/mref, 1-(1-p)^(1/mref), kk*mref;
-                             cutoff=cutoff, maxdim=maxdim_mpdo, excited=excited, lsites=ls)
-            orf = mpdo_observables(rr, ls)
-            r2, _ = mpdo_run(n_err, th/m2, 1-(1-p)^(1/m2), kk*m2;
-                             cutoff=cutoff, maxdim=maxdim_mpdo, excited=excited, lsites=ls)
-            o2 = mpdo_observables(r2, ls)
+            # AVERAGE OVER INITIAL STATES. A single random product state gives a
+            # Trotter error with ~50% scatter -- measured at n=8, k=10,
+            # theta=0.95 the error ranges 0.046..0.185 over 14 states -- so one
+            # seed cannot rank two parameter choices. Each metric is reported as
+            # a mean over ERR_SEEDS states with its standard deviation, and the
+            # sd is the number that says whether a difference is real.
+            ezs = Float64[]; eas = Float64[]; ecs = Float64[]
+            enns = Float64[]; ees = Float64[]; ems = Float64[]
+            rzs = Float64[]; rcs = Float64[]; rnns = Float64[]
+            trc = 1.0; trr = 1.0
+            for sd in 1:err_seeds
+                sv = 20260916 + 1000*(sd-1)
+                rc, _ = mpdo_run(n_err, th, p, kk; cutoff=cutoff, maxdim=maxdim_mpdo,
+                                 excited=excited, lsites=ls, seed=sv)
+                oc = mpdo_observables(rc, ls)
+                rr, _ = mpdo_run(n_err, th/mref, 1-(1-p)^(1/mref), kk*mref;
+                                 cutoff=cutoff, maxdim=maxdim_mpdo, excited=excited,
+                                 lsites=ls, seed=sv)
+                orf = mpdo_observables(rr, ls)
+                r2, _ = mpdo_run(n_err, th/m2, 1-(1-p)^(1/m2), kk*m2;
+                                 cutoff=cutoff, maxdim=maxdim_mpdo, excited=excited,
+                                 lsites=ls, seed=sv)
+                o2 = mpdo_observables(r2, ls)
+                push!(ezs,  maximum(abs.(oc.z .- orf.z)))
+                # mean over sites as well as max: a maximum over n numbers is a
+                # noisy statistic, and this one is the steadier discriminator.
+                push!(eas,  sum(abs.(oc.z .- orf.z))/n_err)
+                push!(ecs,  abs(oc.zz_center - orf.zz_center))
+                push!(enns, abs(oc.zz_nn     - orf.zz_nn))
+                push!(ees,  abs(oc.zz_end    - orf.zz_end))
+                push!(ems,  abs(oc.mz        - orf.mz))
+                push!(rzs,  maximum(abs.(orf.z .- o2.z)))
+                push!(rcs,  abs(orf.zz_center - o2.zz_center))
+                push!(rnns, abs(orf.zz_nn     - o2.zz_nn))
+                trc = oc.trace; trr = orf.trace
+            end
+            sdev(v) = length(v) > 1 ? std(v) : 0.0
             wall_err = time() - t0
 
-            ez   = maximum(abs.(oc.z .- orf.z))
-            rez  = maximum(abs.(orf.z .- o2.z))
+            ez = mean(ezs); rez = mean(rzs)
             vals = Any[kk, @sprintf("%.6f",th), @sprintf("%.6f",p),
                        @sprintf("%.6f",Jt), @sprintf("%.6f",gt), 30*kk, mref,
-                       @sprintf("%.6f",th/mref),
-                       @sprintf("%.6e",ez),
-                       @sprintf("%.6e",abs(oc.mz-orf.mz)),
-                       @sprintf("%.6e",abs(oc.zz_center-orf.zz_center)),
-                       @sprintf("%.6e",abs(oc.zz_nn-orf.zz_nn)),
-                       @sprintf("%.6e",abs(oc.zz_end-orf.zz_end)),
+                       @sprintf("%.6f",th/mref), err_seeds,
+                       @sprintf("%.6e",ez),          @sprintf("%.6e",sdev(ezs)),
+                       @sprintf("%.6e",mean(eas)),   @sprintf("%.6e",sdev(eas)),
+                       @sprintf("%.6e",mean(ems)),
+                       @sprintf("%.6e",mean(ecs)),   @sprintf("%.6e",sdev(ecs)),
+                       @sprintf("%.6e",mean(enns)),  @sprintf("%.6e",sdev(enns)),
+                       @sprintf("%.6e",mean(ees)),
                        @sprintf("%.6e",rez),
-                       @sprintf("%.6e",abs(orf.zz_center-o2.zz_center)),
-                       @sprintf("%.6e",abs(orf.zz_nn-o2.zz_nn)),
-                       @sprintf("%.10f",oc.trace), @sprintf("%.10f",orf.trace),
+                       @sprintf("%.6e",mean(rcs)),   @sprintf("%.6e",mean(rnns)),
+                       @sprintf("%.10f",trc), @sprintf("%.10f",trr),
                        @sprintf("%.1f",wall_err)]
             chis = Float64[]
             for nn in nlist
@@ -634,9 +677,9 @@ function run_frontier()
             push!(rows, join(vals, ","))
             cstr = String[]
             for c in chis; push!(cstr, @sprintf("%8.1f", c)); end
-            @printf("%4d %7.3f %8.4f %7.3f %8.4f %6d %6d | %9.4f %9.4f %9.4f | %s\n",
-                    kk, th, p, Jt, gt, 30*kk, mref, ez,
-                    abs(oc.zz_center-orf.zz_center), rez, join(cstr, " "))
+            @printf("%4d %7.3f %8.4f %7.3f %8.4f %6d %6d | %7.4f+-%-6.4f %7.4f %7.4f | %s\n",
+                    kk, th, p, Jt, gt, 30*kk, mref, ez, sdev(ezs),
+                    mean(ecs), rez, join(cstr, " "))
             flush(stdout)
             write(joinpath(outdir, "frontier$(sfx).csv"), join(rows,"\n")*"\n")
         end
