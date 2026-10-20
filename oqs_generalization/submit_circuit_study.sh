@@ -272,16 +272,29 @@ case $SLURM_ARRAY_TASK_ID in
   # N_ERR=8 with MAXDIM_MPDO=256 is the exact vectorised ceiling 4^4, so the
   # error runs are untruncated and err_* is pure Trotter error.
   #
-  # 46 is the production grid: 4 k x 4 theta = 16 cells, a few hours.
-  # 47 is a 4-cell smoke test at k=10 only -- run it first, it is ~20 min and
-  # it reproduces the k=10 row, which you can cross-check against the maps.
+  # ERR_SEEDS: the Trotter error is strongly initial-state dependent. Measured
+  # at n=8, k=10, theta=0.95 over 14 random product states, max_j|Delta<Z_j>|
+  # ranges 0.046..0.185 -- a factor of FOUR, sd ~50% of the mean. The first
+  # run of task 47 used one state and produced a NON-MONOTONIC error column
+  # (0.039, 0.091, 0.079, 0.061 for theta = 0.30, 0.475, 0.65, 0.95), which is
+  # scatter, not signal. Each error is now the mean over ERR_SEEDS states and
+  # the CSV carries its sd; a difference smaller than the sd means nothing.
+  # err_z_mean (mean over sites) is the steadier discriminator than err_z_max.
+  #
+  # 46 is the production grid: 4 k x 4 theta = 16 cells. With ERR_SEEDS=5 the
+  # error part is ~5x the smoke test's ~80 s/cell, so budget ~2 h for errors
+  # plus ~1 h of trajectories. Submit with --time=11:00:00 as usual.
+  # 47 is a 4-cell smoke test at k=10 only -- run it first, ~1 h with 5 seeds,
+  # and it reproduces the k=10 row, which you can cross-check against the maps.
   46) export MODE=frontier GJ=0.107986 NLIST=8,12,16 N_ERR=8 REF_STEPS=240
+      export ERR_SEEDS=5
       export KLIST=10,15,20,32
       export THETAS=0.30,0.475,0.65,0.95
       export NTRAJ=16 MAXDIM_TRAJ=4096 MAXDIM_MPDO=256
       export CUTOFF=1e-14 CUTOFF_TRAJ=1e-8 EXCITED=random BLAS_THREADS=4
       export OUTDIR=ckt_frontier TAG=fr ;;
   47) export MODE=frontier GJ=0.107986 NLIST=8,12,16 N_ERR=8 REF_STEPS=240
+      export ERR_SEEDS=5
       export KLIST=10
       export THETAS=0.30,0.475,0.65,0.95
       export NTRAJ=16 MAXDIM_TRAJ=4096 MAXDIM_MPDO=256
