@@ -256,7 +256,15 @@ observable and sweep helpers so a circuit is never run more than once per point.
 """
 function mpdo_run(n::Int, theta::Float64, p::Float64, k::Int;
                   cutoff::Float64=1e-12, maxdim::Int=1024,
-                  excited=:neel, dissipation::Bool=true, lsites=nothing)
+                  excited=:neel, dissipation::Bool=true, lsites=nothing,
+                  seed::Int=20260916)
+    # `seed` only matters for excited=:random, where it picks WHICH Haar product
+    # state the run starts from. The default reproduces every earlier run.
+    # It exists because the Trotter error turns out to be strongly initial-state
+    # dependent: at n=8, k=10, theta=0.95 the error max_j|Delta<Z_j>| ranges over
+    # 0.046 to 0.185 across 14 random product states -- a factor of four. Any
+    # error quoted from a single seed is a sample from a broad distribution and
+    # cannot rank two parameter choices. Average over seeds instead.
     # `lsites` lets two runs SHARE one set of Index objects. Without it every
     # call makes fresh indices, and any operation relating the two states --
     # inner(rho, rho_ref) for a distance, or one site operator applied to both --
@@ -264,7 +272,7 @@ function mpdo_run(n::Int, theta::Float64, p::Float64, k::Int;
     # version of trotter_infidelity: the older code only ever compared numbers
     # extracted from self-contained runs, so it never noticed.
     lsites = isnothing(lsites) ? liouville_siteinds(n) : lsites
-    rho = vectorized_product_mps(lsites, initial_kets(n, excited))
+    rho = vectorized_product_mps(lsites, initial_kets(n, excited; seed=seed))
     U = circuit_bond_matrix(theta)
     odd  = vcat([unitary_channel_gates(U, [j, j+1], lsites) for j in 1:2:n-1]...)
     even = n > 2 ? vcat([unitary_channel_gates(U, [j, j+1], lsites) for j in 2:2:n-1]...) : ITensor[]
