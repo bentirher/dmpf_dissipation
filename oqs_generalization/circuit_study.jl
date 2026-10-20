@@ -137,6 +137,7 @@ open(joinpath(outdir,"manifest.csv"),"w") do io
                   ("klist",getenv("KLIST","(unset)")),("gj",getenv("GJ","(unset)")),
                   ("n_err",getenv("N_ERR","(unset)")),
                   ("ref_steps",getenv("REF_STEPS","(unset)")),
+                  ("ref_theta",getenv("REF_THETA","(unset)")),
                   ("err_seeds",getenv("ERR_SEEDS","(unset)")),
                   ("mref",getenv("MREF","(unset)")),
                   ("ref_every",getenv("REF_EVERY","(unset)")),
@@ -566,6 +567,15 @@ function run_frontier()
     n_err     = parse(Int, getenv("N_ERR", 8))
     ref_steps = parse(Int, getenv("REF_STEPS", 240))
     err_seeds = parse(Int, getenv("ERR_SEEDS", 5))
+    # REF_THETA: define the reference by its STEP ANGLE instead of by a total
+    # substep budget. REF_STEPS holds k*mref ~ constant, which makes the
+    # reference's own step angle theta/mref vary across the grid -- in the first
+    # 16-cell run it ranged 0.0125 to 0.119, a factor of 9, and the three
+    # coarsest cells (all at k=32) came back with err/ref_err of only 9-10,
+    # i.e. not resolved. Setting REF_THETA fixes the reference quality instead
+    # of its cost: mref = ceil(theta/REF_THETA), so the substeps scale with J*t.
+    # REF_THETA=0.02 costs ~2.4x the REF_STEPS default on that grid, 0.01 ~4.7x.
+    ref_theta = parse(Float64, getenv("REF_THETA", 0.0))
     ceil_err  = 4.0^(n_err ÷ 2)
     # The global THETAS default is the 17-point sweep used by MODE=theta, which
     # would make this a 68-cell job. Use a frontier-sized default unless THETAS
@@ -580,6 +590,11 @@ function run_frontier()
     end
     @printf("chi from trajectories at n = %s, NTRAJ=%d\n", join(nlist,","), ntraj)
     @printf("Trotter error averaged over ERR_SEEDS=%d random initial states\n", err_seeds)
+    if ref_theta > 0
+        @printf("reference step angle fixed at REF_THETA=%.4f (mref = ceil(theta/REF_THETA))\n", ref_theta)
+    else
+        @printf("reference sized by REF_STEPS=%d (mref = round(REF_STEPS/k)); theta_ref VARIES\n", ref_steps)
+    end
     @printf("grid: %d k x %d theta = %d cells\n\n", length(ks), length(ths),
             length(ks)*length(ths))
     flush(stdout)
@@ -605,7 +620,9 @@ function run_frontier()
     for kk in ks
         for th in ths
             Jt = kk*th/2; gt = gJ*Jt; p = 1 - exp(-gt/kk)
-            mref = max(4, round(Int, ref_steps/kk)); isodd(mref) && (mref += 1)
+            mref = ref_theta > 0 ? max(4, ceil(Int, th/ref_theta)) :
+                                   max(4, round(Int, ref_steps/kk))
+            isodd(mref) && (mref += 1)
             m2   = mref ÷ 2
             ls = liouville_siteinds(n_err)
             t0 = time()

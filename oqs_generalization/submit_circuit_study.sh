@@ -293,6 +293,31 @@ case $SLURM_ARRAY_TASK_ID in
       export NTRAJ=16 MAXDIM_TRAJ=4096 MAXDIM_MPDO=256
       export CUTOFF=1e-14 CUTOFF_TRAJ=1e-8 EXCITED=random BLAS_THREADS=4
       export OUTDIR=ckt_frontier TAG=fr ;;
+  # 48: the decisive comparison, at a FIXED reference step angle. Task 46 used
+  # REF_STEPS, which holds k*mref constant and so lets theta_ref drift from
+  # 0.0125 to 0.119 across the grid; the three k=32 cells came back with
+  # err/ref_err of 9-10, i.e. their errors were not resolved. REF_THETA pins the
+  # reference quality instead. This re-measures only the four cells at matched
+  # physics (gamma*t = 0.513, J*t = 4.75) -- the comparison the protocol choice
+  # actually rests on -- so it is cheap despite the finer reference.
+  #     k=10 theta=0.950 | k=15 theta=0.650 | k=20 theta=0.475 | k=32 theta=0.300
+  # Run each as its own array index because THETAS is shared across the grid.
+  48) export MODE=frontier GJ=0.107986 NLIST=8,12,16 N_ERR=8 REF_THETA=0.01
+      export ERR_SEEDS=8 KLIST=20 THETAS=0.475
+      export NTRAJ=16 MAXDIM_TRAJ=4096 MAXDIM_MPDO=256
+      export CUTOFF=1e-14 CUTOFF_TRAJ=1e-8 EXCITED=random BLAS_THREADS=4
+      export OUTDIR=ckt_frontier_fine20 TAG=f20 ;;
+  49) export MODE=frontier GJ=0.107986 NLIST=8,12,16 N_ERR=8 REF_THETA=0.01
+      export ERR_SEEDS=8 KLIST=32 THETAS=0.300
+      export NTRAJ=16 MAXDIM_TRAJ=4096 MAXDIM_MPDO=256
+      export CUTOFF=1e-14 CUTOFF_TRAJ=1e-8 EXCITED=random BLAS_THREADS=4
+      export OUTDIR=ckt_frontier_fine32 TAG=f32 ;;
+  55) export MODE=frontier GJ=0.107986 NLIST=8,12,16 N_ERR=8 REF_THETA=0.01
+      export ERR_SEEDS=8 KLIST=10 THETAS=0.950
+      export NTRAJ=16 MAXDIM_TRAJ=4096 MAXDIM_MPDO=256
+      export CUTOFF=1e-14 CUTOFF_TRAJ=1e-8 EXCITED=random BLAS_THREADS=4
+      export OUTDIR=ckt_frontier_fine10 TAG=f10 ;;
+
   47) export MODE=frontier GJ=0.107986 NLIST=8,12,16 N_ERR=8 REF_STEPS=240
       export ERR_SEEDS=5
       export KLIST=10
