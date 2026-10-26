@@ -37,6 +37,14 @@
 #   the point where more qubits stop buying classical cost at k = 10.
 #
 #   NEXT UP:
+#     58        THE ONLY THING LEFT TO RUN: the hardware baseline (circuit and
+#               quasi-exact curves, step by step) at the chosen point
+#               k=15, theta=0.30, p=0.0161.
+#                   sbatch --array=58 submit_circuit_study.sh
+#
+#               chi(n) at both candidates is ALREADY DONE -- tasks 44 (candA,
+#               k=10 theta=0.475) and 45 (candB, k=15 theta=0.30), both out to
+#               n=22. 56/57 were duplicates of those and now refuse to run.
 #     46,47     MODE=frontier -- the accuracy-vs-hardness plot, BOTH axes in one
 #               CSV. Run 47 first (4 cells, ~20 min, reproduces the k=10 row you
 #               can cross-check against the maps), then 46 for the full grid.
@@ -326,7 +334,50 @@ case $SLURM_ARRAY_TASK_ID in
       export CUTOFF=1e-14 CUTOFF_TRAJ=1e-8 EXCITED=random BLAS_THREADS=4
       export OUTDIR=ckt_frontier_smoke TAG=fr0 ;;
 
-  # --- 44-45 / 53-54: THE ACCURACY-vs-HARDNESS CANDIDATES --------------------
+  # --- 56-58: THE CHOSEN OPERATING POINT -------------------------------------
+  #
+  # The frontier (46) plus the fine-reference confirmation (48/49/55) settled
+  # the protocol: theta = 0.30, p = 0.016067, with k as large as the two-qubit
+  # depth budget allows -- which is k = 10-15 on the real device, not 20-32. At matched physics the deeper circuit is 5.1x more
+  # accurate at 7.3 sigma with chi UNCHANGED (+0.5 sigma), and theta = 0.30 had
+  # the highest chi in the whole 16-cell grid at every depth from 450 up.
+  #
+  # WHAT IS STILL MISSING. Every chi in the frontier is at n <= 16, and at the
+  # candidate n=8 and n=12 are 84-97% and 68-91% of their ceilings 2^(n/2), so
+  # the exponent cannot be fitted from them -- beta(12->16) comes out anywhere
+  # from 0.25 to 0.37 depending on the cell, which is ceiling contamination, not
+  # physics. The classical wall quoted so far (n ~ 26 on a 64 GB node) was
+  # measured at the OLD point (theta=0.95, p=0.05, k=10) and does not transfer.
+  # 56 and 57 extend chi(n) to n = 20 and 22 at the new point so beta, and with
+  # it the wall, can be refitted. That is the last number the hardware proposal
+  # needs.
+  #
+  # 58 is the hardware baseline at the chosen point: the circuit curve and the
+  # quasi-exact curve, step by step, with the dense reference for plotting.
+  #
+  # Supersedes 44/45/53/54, which targeted candidates the frontier has now
+  # ruled out. Do not run those.
+  # 56 and 57 ARE DUPLICATES OF 44 AND 45. Kept only so the numbering in the
+  # write-up does not dangle. DO NOT RUN THEM -- the data already exists:
+  #     57 == 44 (ckt_candA): k=10, theta=0.475, p=0.0253
+  #     56 == 45 (ckt_candB): k=15, theta=0.300, p=0.0161
+  # The only differences are p in the 5th decimal (0.0253 vs 0.025321, a 0.09%
+  # change in gamma*t) and MAXDIM_TRAJ 4096 vs 8192, which never bound: the
+  # largest chi seen at n=22 anywhere in this study is ~1800.
+  #
+  # I marked 44/45 "superseded" and then re-created them under new numbers.
+  # They were never superseded -- the frontier CHANGED WHICH of the two is
+  # preferred (k=15, theta=0.30 over k=10, theta=0.475), but both were already
+  # measured out to n=22, which is exactly what the beta fit needs.
+  56) echo "DUPLICATE of task 45 (ckt_candB) -- already run, do not submit" >&2; exit 1 ;;
+  57) echo "DUPLICATE of task 44 (ckt_candA) -- already run, do not submit" >&2; exit 1 ;;
+  58) export MODE=evolve N=10 K=15 THETA=0.300 P=0.016067 MREF=20 EXCITED=random
+      export MAXDIM_MPDO=1024 CUTOFF=1e-14 BLAS_THREADS=16 REF_EVERY=1
+      export OUTDIR=ckt_evolve_pick TAG=pk ;;
+
+  # --- 44-45: chi(n) at the two candidates. ALREADY RUN (ckt_candA/ckt_candB).
+  # --- 53-54: their evolve baselines. 53 is still worth having if you end up
+  # ---        at k=10; 58 covers the k=15 primary. -------------------------
   #
   # WHY THESE EXIST. Holding the PHYSICS fixed (J*t = 4.75, gamma*t = 0.513) and
   # varying only the Trotter step gives chi(n=16) = 160, 180, 173, 198, 185 at
