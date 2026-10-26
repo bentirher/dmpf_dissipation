@@ -1,0 +1,31 @@
+key,value
+mode,frontier
+n,16
+nlist,8 12 16
+k,10
+p,0.05
+plist,0.0 0.01 0.02 0.05 0.1 0.15 0.25
+theta,1.5708
+thetas,0.3
+maxdim,1024
+cutoff,1.0e-14
+ntraj,16
+kref,1000
+excited,random
+Jref,0.25
+Gref,0.0625
+maxdim_mpdo,256
+maxdim_traj,4096
+cutoff_traj,1.0e-8
+skip_mpdo,false
+klist,32
+gj,0.107986
+n_err,8
+ref_steps,(unset)
+ref_theta,0.01
+err_seeds,8
+mref,(unset)
+ref_every,(unset)
+threads,16
+host,hyperion-288
+started,2026-10-20T16:10:26.387
